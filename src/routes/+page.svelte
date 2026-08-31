@@ -14,6 +14,7 @@
   import CommentsPanel from "$lib/components/CommentsPanel.svelte";
   import SearchBar from "$lib/components/SearchBar.svelte";
   import QuickOpen from "$lib/components/QuickOpen.svelte";
+  import LibrarySearch from "$lib/components/LibrarySearch.svelte";
   import * as Resizable from "$lib/components/ui/resizable/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import FilePlus from "@lucide/svelte/icons/file-plus-2";
@@ -38,6 +39,7 @@
       export_pdf: () => app.exportPdf(),
       print: () => app.printDoc(),
       find: () => app.openSearch(),
+      search_library: () => (app.librarySearchVisible = true),
       view_reading: () => app.setViewMode("preview"),
       view_split: () => app.setViewMode("split"),
       view_writing: () => app.setViewMode("editor"),
@@ -131,6 +133,9 @@
     } else if (key === "t") {
       event.preventDefault();
       app.toggleToc();
+    } else if (key === "k" && event.shiftKey) {
+      event.preventDefault();
+      app.librarySearchVisible = true;
     } else if (key === "k") {
       event.preventDefault();
       app.quickOpenVisible = true;
@@ -278,3 +283,4 @@
 </div>
 
 <QuickOpen />
+<LibrarySearch />

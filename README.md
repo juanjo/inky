@@ -121,16 +121,17 @@ notarization — `tauri build` supports it via the `APPLE_*` signing env vars.)
 ### Auto-updates
 
 The app checks for updates on launch (silently) and via **Inky → Check for
-Updates…**. To make updates live:
+Updates…**. The updater endpoint in `src-tauri/tauri.conf.json` points at the
+latest GitHub release of `juanjo/inky`. Shipping an update:
 
-1. Create a GitHub repo for Inky and replace
-   `REPLACE_WITH_YOUR_GITHUB_USER` in the updater endpoint in
-   `src-tauri/tauri.conf.json`.
-2. Bump `version` in `src-tauri/tauri.conf.json`, run `make release`.
-3. Create a GitHub release tagged `v<version>` and upload the four files
-   from `dist/release/` (dmg, tar.gz, sig, latest.json).
+1. Bump `version` in `src-tauri/tauri.conf.json` and commit.
+2. `git tag v<version> && git push --tags` — CI
+   (`.github/workflows/release.yml`) builds, signs, and publishes the release
+   automatically. (`make release` still works for a manual, local release.)
+3. Existing installs pick it up on next launch.
 
-Updates are signed with `~/.tauri/inky.key` — back that file up; without it
+Updates are signed with `~/.tauri/inky.key` (mirrored in the repo's
+`TAURI_SIGNING_PRIVATE_KEY` Actions secret) — back that file up; without it
 you can't ship updates to existing installs.
 
 ## MCP server (let agents use your library)

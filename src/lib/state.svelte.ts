@@ -61,6 +61,9 @@ class AppState {
   sidebarVisible = $state(true);
   focusMode = $state(false);
   quickOpenVisible = $state(false);
+  librarySearchVisible = $state(false);
+  /** Query the in-document search bar should run once it opens. */
+  pendingSearchQuery: string | null = null;
 
   commentsVisible = $state(false);
   commentThreads = $state<CommentThread[]>([]);
@@ -467,9 +470,24 @@ class AppState {
     if (!this.currentPath) return;
     try {
       const raw = await invoke<string>("read_comments", { docPath: this.currentPath });
-      const threads = raw ? (JSON.parse(raw).threads ?? []) : [];
-      if (JSON.stringify(threads) !== JSON.stringify(this.commentThreads)) {
-        this.commentThreads = threads;
+      const threads: CommentThread[] = raw ? (JSON.parse(raw).threads ?? []) : [];
+      if (JSON.stringify(threads) === JSON.stringify(this.commentThreads)) return;
+      // Surface externally-added messages (e.g. an agent replying via MCP).
+      const known = new Set(this.commentThreads.flatMap((t) => t.comments.map((m) => m.id)));
+      const fresh = threads.flatMap((t) => t.comments).filter((m) => !known.has(m.id));
+      this.commentThreads = threads;
+      if (fresh.length > 0) {
+        const authors = [...new Set(fresh.map((m) => m.author).filter(Boolean))];
+        const who = authors.length ? ` from ${authors.join(", ")}` : "";
+        toast.info(`${fresh.length} new comment${fresh.length === 1 ? "" : "s"}${who}`, {
+          action: {
+            label: "Show",
+            onClick: () => {
+              this.commentsVisible = true;
+              this.tocVisible = false;
+            },
+          },
+        });
       }
     } catch {
       // Unreadable sidecar; keep current state.

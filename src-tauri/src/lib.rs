@@ -93,6 +93,65 @@ fn guard(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
     }
 }
 
+const HISTORY_DIR: &str = ".inky-history";
+const SNAPSHOT_MIN_INTERVAL_SECS: u64 = 10 * 60;
+const SNAPSHOT_KEEP: usize = 20;
+
+/// Before overwriting a document, keep the old version in a hidden history
+/// folder next to it — at most one snapshot per 10 minutes, last 20 kept.
+fn snapshot(doc: &Path) {
+    let Ok(old) = fs::read_to_string(doc) else {
+        return;
+    };
+    let (Some(parent), Some(stem), Some(ext)) = (
+        doc.parent(),
+        doc.file_stem().and_then(|s| s.to_str()),
+        doc.extension().and_then(|e| e.to_str()),
+    ) else {
+        return;
+    };
+    let dir = parent.join(HISTORY_DIR);
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let mut mine: Vec<PathBuf> = fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|n| n.starts_with(&format!("{stem}.")) && n.ends_with(&format!(".{ext}")))
+                        .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    mine.sort();
+    if let Some(last) = mine.last() {
+        if let Ok(meta) = fs::metadata(last) {
+            if let Ok(modified) = meta.modified() {
+                if modified.elapsed().map(|e| e.as_secs()).unwrap_or(u64::MAX)
+                    < SNAPSHOT_MIN_INTERVAL_SECS
+                {
+                    return;
+                }
+            }
+        }
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = fs::write(dir.join(format!("{stem}.{ts}.{ext}")), old);
+    if mine.len() >= SNAPSHOT_KEEP {
+        for stale in &mine[..mine.len() + 1 - SNAPSHOT_KEEP] {
+            let _ = fs::remove_file(stale);
+        }
+    }
+}
+
 /// Hidden sidecar file holding a document's comment threads.
 fn sidecar_for(doc: &Path) -> Option<PathBuf> {
     let name = doc.file_name()?.to_str()?;
@@ -195,7 +254,68 @@ fn read_doc(app: tauri::AppHandle, path: String) -> Result<String, String> {
 #[tauri::command]
 fn write_doc(app: tauri::AppHandle, path: String, content: String) -> Result<(), String> {
     let p = guard(&app, &path)?;
+    if fs::read_to_string(&p).map(|old| old != content).unwrap_or(false) {
+        snapshot(&p);
+    }
     fs::write(p, content).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchHit {
+    path: String,
+    name: String,
+    line: u32,
+    text: String,
+}
+
+#[tauri::command]
+fn search_library(app: tauri::AppHandle, query: String) -> Result<Vec<SearchHit>, String> {
+    let root = resolve_root(&app)?;
+    let needle = query.to_lowercase();
+    if needle.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with('.') {
+                    continue;
+                }
+                if p.is_dir() {
+                    collect_files(&p, out);
+                } else if is_doc(&p) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut files = Vec::new();
+    collect_files(&root, &mut files);
+    files.sort();
+    let mut hits = Vec::new();
+    'outer: for file in files {
+        let Ok(content) = fs::read_to_string(&file) else {
+            continue;
+        };
+        let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        for (i, line) in content.lines().enumerate() {
+            if line.to_lowercase().contains(&needle) {
+                hits.push(SearchHit {
+                    path: file.to_string_lossy().into_owned(),
+                    name: name.clone(),
+                    line: (i + 1) as u32,
+                    text: line.trim().chars().take(200).collect(),
+                });
+                if hits.len() >= 300 {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    Ok(hits)
 }
 
 #[tauri::command]
@@ -527,6 +647,11 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
                 .accelerator("CmdOrCtrl+F")
                 .build(handle)?,
         )
+        .item(
+            &MenuItemBuilder::with_id("search_library", "Search Library…")
+                .accelerator("CmdOrCtrl+Shift+K")
+                .build(handle)?,
+        )
         .build()?;
 
     let theme_sub = SubmenuBuilder::new(handle, "Theme")
@@ -647,7 +772,8 @@ pub fn run() {
             set_menu_checked,
             save_image,
             read_comments,
-            write_comments
+            write_comments,
+            search_library
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

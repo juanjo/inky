@@ -10,10 +10,11 @@
  * Register with Claude Code:
  *   claude mcp add inky -- node /path/to/inky/mcp/server.mjs
  */
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -79,6 +80,37 @@ async function walk(dir, root, out) {
 
 function text(value) {
   return { content: [{ type: "text", text: value }] };
+}
+
+// --- version snapshots (same policy as the app) ----------------------------
+
+const HISTORY_DIR = ".inky-history";
+const SNAPSHOT_MIN_INTERVAL_MS = 10 * 60 * 1000;
+const SNAPSHOT_KEEP = 20;
+
+/** Before overwriting a document, keep the old version (rate-limited). */
+async function snapshot(absPath) {
+  let old;
+  try {
+    old = await fs.readFile(absPath, "utf8");
+  } catch {
+    return; // new file, nothing to snapshot
+  }
+  const dir = path.join(path.dirname(absPath), HISTORY_DIR);
+  const ext = path.extname(absPath);
+  const stem = path.basename(absPath, ext);
+  await fs.mkdir(dir, { recursive: true });
+  const mine = (await fs.readdir(dir)).filter((f) => f.startsWith(stem + ".") && f.endsWith(ext)).sort();
+  const last = mine.at(-1);
+  if (last) {
+    const st = await fs.stat(path.join(dir, last));
+    if (Date.now() - st.mtimeMs < SNAPSHOT_MIN_INTERVAL_MS) return;
+  }
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  await fs.writeFile(path.join(dir, `${stem}.${ts}${ext}`), old, "utf8");
+  for (const f of mine.slice(0, Math.max(0, mine.length - (SNAPSHOT_KEEP - 1)))) {
+    await fs.rm(path.join(dir, f), { force: true });
+  }
 }
 
 // --- comment sidecars (same format the app uses) ---------------------------
@@ -168,8 +200,86 @@ server.registerTool(
     }
     const { resolved } = await resolveInLibrary(relPath);
     await fs.mkdir(path.dirname(resolved), { recursive: true });
+    await snapshot(resolved);
     await fs.writeFile(resolved, content, "utf8");
     return text(`Saved ${relPath} (${content.length} chars)`);
+  },
+);
+
+server.registerTool(
+  "patch_document",
+  {
+    title: "Edit part of an Inky document",
+    description:
+      "Replace an exact text snippet inside a document. Prefer this over write_document for edits — it fails safely if the document changed since you read it. old_text must appear exactly once (include surrounding context to disambiguate).",
+    inputSchema: {
+      path: z.string().describe("Library-relative document path"),
+      old_text: z.string().describe("Exact text to replace (must occur exactly once)"),
+      new_text: z.string().describe("Replacement text"),
+    },
+  },
+  async ({ path: relPath, old_text, new_text }) => {
+    const { resolved } = await resolveInLibrary(relPath);
+    const content = await fs.readFile(resolved, "utf8");
+    const count = content.split(old_text).length - 1;
+    if (count === 0) {
+      throw new Error("old_text not found — the document may have changed; re-read it first.");
+    }
+    if (count > 1) {
+      throw new Error(`old_text occurs ${count} times — include more surrounding context.`);
+    }
+    await snapshot(resolved);
+    await fs.writeFile(resolved, content.replace(old_text, new_text), "utf8");
+    return text(`Patched ${relPath}`);
+  },
+);
+
+server.registerTool(
+  "rename_document",
+  {
+    title: "Rename an Inky document",
+    description:
+      "Rename a document in place (comments follow the document). new_name keeps the original extension if none is given.",
+    inputSchema: {
+      path: z.string().describe("Library-relative document path"),
+      new_name: z.string().describe("New file name, e.g. 'Better title.md'"),
+    },
+  },
+  async ({ path: relPath, new_name }) => {
+    const { resolved } = await resolveInLibrary(relPath);
+    let name = new_name.trim();
+    if (!isDoc(name)) name += path.extname(resolved);
+    if (name.includes("/")) throw new Error("new_name must not contain '/'");
+    const target = path.join(path.dirname(resolved), name);
+    if (fsSync.existsSync(target)) throw new Error(`${name} already exists`);
+    await fs.rename(resolved, target);
+    await fs.rename(sidecarFor(resolved), sidecarFor(target)).catch(() => {});
+    const rel = path.relative(await libraryRoot(), target);
+    return text(`Renamed to ${rel}`);
+  },
+);
+
+server.registerTool(
+  "move_document",
+  {
+    title: "Move an Inky document",
+    description:
+      "Move a document into another folder of the library (folders are created if missing; comments follow the document).",
+    inputSchema: {
+      path: z.string().describe("Library-relative document path"),
+      target_folder: z.string().describe("Library-relative destination folder ('' for the root)"),
+    },
+  },
+  async ({ path: relPath, target_folder }) => {
+    const { resolved } = await resolveInLibrary(relPath);
+    const { resolved: destDir } = await resolveInLibrary(target_folder || ".");
+    await fs.mkdir(destDir, { recursive: true });
+    const target = path.join(destDir, path.basename(resolved));
+    if (fsSync.existsSync(target)) throw new Error(`${path.basename(resolved)} already exists there`);
+    await fs.rename(resolved, target);
+    await fs.rename(sidecarFor(resolved), sidecarFor(target)).catch(() => {});
+    const rel = path.relative(await libraryRoot(), target);
+    return text(`Moved to ${rel}`);
   },
 );
 
@@ -234,6 +344,39 @@ server.registerTool(
       if (hits.length > 200) break;
     }
     return text(hits.length ? hits.slice(0, 200).join("\n") : `No matches for "${query}"`);
+  },
+);
+
+// Expose every document as an MCP resource so clients can @-mention them.
+server.registerResource(
+  "document",
+  new ResourceTemplate("inky://doc/{+path}", {
+    list: async () => {
+      const root = await libraryRoot();
+      const items = await walk(root, root, []);
+      return {
+        resources: items
+          .filter((i) => i.type !== "folder")
+          .map((i) => ({
+            uri: `inky://doc/${i.path}`,
+            name: i.path,
+            mimeType: "text/markdown",
+          })),
+      };
+    },
+  }),
+  {
+    title: "Inky documents",
+    description: "Markdown documents in the user's Inky library",
+    mimeType: "text/markdown",
+  },
+  async (uri, { path: relPath }) => {
+    const { resolved } = await resolveInLibrary(String(relPath));
+    return {
+      contents: [
+        { uri: uri.href, mimeType: "text/markdown", text: await fs.readFile(resolved, "utf8") },
+      ],
+    };
   },
 );
 

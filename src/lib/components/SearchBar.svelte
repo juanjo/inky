@@ -52,7 +52,16 @@
 
   $effect(() => {
     if (app.searchOpen) {
-      setTimeout(() => input?.select(), 30);
+      const pending = app.pendingSearchQuery;
+      app.pendingSearchQuery = null;
+      setTimeout(() => {
+        input?.select();
+        if (pending) {
+          query = pending;
+          // Give the freshly opened document time to mount its search backend.
+          setTimeout(run, 200);
+        }
+      }, 30);
     }
   });
 

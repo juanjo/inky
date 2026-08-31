@@ -33,7 +33,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFEQkQ5Qzc3NjMyMjIwQzcKUldUSElDSmpkNXk5cmQ0VDNQUUZCbVhyMFdIY2g2cU82SmJNV1E2RXM4QUdyd0RlOXhOci9semQK",
       "endpoints": [
-        "https://github.com/REPLACE_WITH_YOUR_GITHUB_USER/inky/releases/latest/download/latest.json"
+        "https://github.com/juanjo/inky/releases/latest/download/latest.json"
       ]
     }
   },
