@@ -341,6 +341,32 @@
       </DropdownMenu.Content>
     </DropdownMenu.Root>
 
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        {#snippet child({ props })}
+          <Button
+            {...props}
+            variant="ghost"
+            size="sm"
+            class="h-7 gap-1.5 px-2 text-xs font-medium text-muted-foreground"
+            onclick={() => app.toggleMcpServer()}
+          >
+            <span
+              class="size-2 rounded-full {app.mcpUrl
+                ? 'bg-green-500 shadow-[0_0_5px_rgb(34_197_94_/_0.8)]'
+                : 'bg-red-400/80'}"
+            ></span>
+            MCP
+          </Button>
+        {/snippet}
+      </Tooltip.Trigger>
+      <Tooltip.Content>
+        {app.mcpUrl
+          ? `MCP server live at ${app.mcpUrl} — click to stop`
+          : "MCP server off — click to start"}
+      </Tooltip.Content>
+    </Tooltip.Root>
+
     <DropdownMenu.Root>
       <DropdownMenu.Trigger>
         {#snippet child({ props })}
@@ -356,14 +382,6 @@
         <DropdownMenu.Separator />
         <DropdownMenu.Item onclick={() => app.refreshTree()}>Refresh library</DropdownMenu.Item>
         <DropdownMenu.Item onclick={revealLibrary}>Reveal library in Finder</DropdownMenu.Item>
-        <DropdownMenu.Separator />
-        <DropdownMenu.Item onclick={() => app.toggleMcpServer()}>
-          {#if app.mcpUrl}
-            <span class="size-1.5 rounded-full bg-green-500"></span> Stop MCP server
-          {:else}
-            Start MCP server
-          {/if}
-        </DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item onclick={() => app.chooseLibrary()}>
           Change library folder…

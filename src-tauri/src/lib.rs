@@ -548,11 +548,23 @@ fn start_mcp(
             }
         }
     }
-    let script = app
+    let mut script = app
         .path()
         .resource_dir()
         .map_err(|e| e.to_string())?
         .join("server.bundle.mjs");
+    if !script.exists() {
+        // Dev fallback: use the bundle (or raw server) from the source tree.
+        for candidate in [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../mcp/server.bundle.mjs"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../mcp/server.mjs"),
+        ] {
+            if Path::new(candidate).exists() {
+                script = PathBuf::from(candidate);
+                break;
+            }
+        }
+    }
     if !script.exists() {
         return Err(format!("MCP server script not found at {}", script.display()));
     }

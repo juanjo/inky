@@ -170,6 +170,13 @@ class AppState {
     if (localStorage.getItem("inky.mcpAutostart") === "true") {
       this.startMcpServer(false);
     }
+    // Keep the MCP status light honest even if the process dies externally.
+    setInterval(async () => {
+      if (this.mcpUrl && !(await invoke<boolean>("mcp_status").catch(() => false))) {
+        this.mcpUrl = null;
+        toast.error("MCP server stopped unexpectedly");
+      }
+    }, 10_000);
   }
 
   /** ⌘Q — save, then exit. */
