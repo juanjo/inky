@@ -11,6 +11,7 @@
   import Editor from "$lib/components/Editor.svelte";
   import Preview from "$lib/components/Preview.svelte";
   import TocPanel from "$lib/components/TocPanel.svelte";
+  import CommentsPanel from "$lib/components/CommentsPanel.svelte";
   import SearchBar from "$lib/components/SearchBar.svelte";
   import QuickOpen from "$lib/components/QuickOpen.svelte";
   import * as Resizable from "$lib/components/ui/resizable/index.js";
@@ -42,6 +43,7 @@
       view_writing: () => app.setViewMode("editor"),
       toggle_sidebar: () => app.toggleSidebar(),
       toggle_toc: () => app.toggleToc(),
+      toggle_comments: () => app.toggleComments(),
       sync_scroll: () => app.toggleSyncScroll(),
       focus_mode: () => app.toggleFocusMode(),
       quick_open: () => (app.quickOpenVisible = true),
@@ -132,6 +134,9 @@
     } else if (key === "k") {
       event.preventDefault();
       app.quickOpenVisible = true;
+    } else if (key === "c" && event.shiftKey) {
+      event.preventDefault();
+      app.toggleComments();
     } else if (key === "f" && event.shiftKey) {
       event.preventDefault();
       app.toggleFocusMode();
@@ -219,6 +224,31 @@
         {/key}
       {/if}
     </main>
+
+    {#if ready && app.currentPath && app.commentsVisible && !app.isMermaidDoc}
+      <div
+        class="no-print relative shrink-0"
+        style="width: {tocWidth}px"
+        transition:slide={{ axis: "x", duration: 220, easing: cubicOut }}
+      >
+        <div class="absolute inset-y-0 right-0" style="width: {tocWidth}px">
+          <CommentsPanel />
+        </div>
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="absolute inset-y-0 -left-[3px] z-10 w-1.5 cursor-col-resize transition-colors hover:bg-ring/50 active:bg-ring/70"
+          onpointerdown={(e) =>
+            startPanelDrag(e, {
+              get: () => tocWidth,
+              set: (w) => (tocWidth = w),
+              sign: -1,
+              min: 200,
+              max: 480,
+              storageKey: "inky.tocWidth",
+            })}
+        ></div>
+      </div>
+    {/if}
 
     {#if ready && app.currentPath && app.tocVisible && !app.isMermaidDoc}
       <div

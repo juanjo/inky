@@ -10,6 +10,16 @@ import type { ThemeName, TreeNode, ViewMode } from "./types";
 import { WELCOME_DOC, MERMAID_TEMPLATE } from "./templates";
 import { extractToc, type TocEntry } from "./markdown";
 import { lockSync } from "./scrollsync";
+import { newId, type CommentThread } from "./comments";
+
+export type { CommentThread };
+export type CommentFilter = "all" | "open" | "resolved";
+
+export interface CommentDraft {
+  quote: string;
+  prefix: string;
+  suffix: string;
+}
 
 export type { TocEntry };
 
@@ -51,6 +61,18 @@ class AppState {
   sidebarVisible = $state(true);
   focusMode = $state(false);
   quickOpenVisible = $state(false);
+
+  commentsVisible = $state(false);
+  commentThreads = $state<CommentThread[]>([]);
+  commentFilter = $state<CommentFilter>("open");
+  commentDraft = $state<CommentDraft | null>(null);
+  activeThreadId = $state<string | null>(null);
+  /** Flat-text position of each open thread's anchor in the preview. */
+  threadOrder = $state<Record<string, number>>({});
+  /** Source position of each open thread's anchor in the editor. */
+  editorThreadPos: Record<string, { from: number; to: number }> = {};
+
+  openCommentCount = $derived(this.commentThreads.filter((t) => !t.resolved).length);
 
   #preFocus: { viewMode: ViewMode; sidebar: boolean; toc: boolean } | null = null;
 
@@ -189,7 +211,132 @@ class AppState {
 
   toggleToc() {
     this.tocVisible = !this.tocVisible;
+    if (this.tocVisible) this.commentsVisible = false;
     localStorage.setItem("inky.tocVisible", String(this.tocVisible));
+  }
+
+  toggleComments() {
+    this.commentsVisible = !this.commentsVisible;
+    if (this.commentsVisible) this.tocVisible = false;
+    else this.commentDraft = null;
+  }
+
+  // --- comments ------------------------------------------------------------
+
+  async loadComments() {
+    this.commentThreads = [];
+    this.activeThreadId = null;
+    this.commentDraft = null;
+    this.threadOrder = {};
+    this.editorThreadPos = {};
+    if (!this.currentPath) return;
+    try {
+      const raw = await invoke<string>("read_comments", { docPath: this.currentPath });
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed.threads)) this.commentThreads = parsed.threads;
+      }
+    } catch {
+      // Missing or unreadable sidecar: start empty.
+    }
+  }
+
+  async saveComments() {
+    if (!this.currentPath) return;
+    const json = this.commentThreads.length
+      ? JSON.stringify({ version: 1, threads: this.commentThreads }, null, 2)
+      : "";
+    try {
+      await invoke("write_comments", { docPath: this.currentPath, json });
+    } catch (e) {
+      toast.error(`Could not save comments: ${e}`);
+    }
+  }
+
+  startCommentDraft(draft: CommentDraft) {
+    this.commentDraft = draft;
+    this.commentsVisible = true;
+    this.tocVisible = false;
+    this.activeThreadId = null;
+  }
+
+  addThread(text: string) {
+    if (!this.commentDraft || !text.trim()) return;
+    const now = new Date().toISOString();
+    const thread: CommentThread = {
+      id: newId("thread"),
+      quote: this.commentDraft.quote,
+      prefix: this.commentDraft.prefix,
+      suffix: this.commentDraft.suffix,
+      resolved: false,
+      createdAt: now,
+      comments: [{ id: newId("msg"), text: text.trim(), createdAt: now }],
+    };
+    this.commentThreads = [...this.commentThreads, thread];
+    this.commentDraft = null;
+    this.activeThreadId = thread.id;
+    this.commentFilter = this.commentFilter === "resolved" ? "open" : this.commentFilter;
+    this.saveComments();
+  }
+
+  replyToThread(threadId: string, text: string) {
+    if (!text.trim()) return;
+    this.commentThreads = this.commentThreads.map((t) =>
+      t.id === threadId
+        ? {
+            ...t,
+            comments: [
+              ...t.comments,
+              { id: newId("msg"), text: text.trim(), createdAt: new Date().toISOString() },
+            ],
+          }
+        : t,
+    );
+    this.saveComments();
+  }
+
+  setThreadResolved(threadId: string, resolved: boolean) {
+    this.commentThreads = this.commentThreads.map((t) =>
+      t.id === threadId ? { ...t, resolved } : t,
+    );
+    if (this.activeThreadId === threadId && resolved) this.activeThreadId = null;
+    this.saveComments();
+  }
+
+  deleteThread(threadId: string) {
+    this.commentThreads = this.commentThreads.filter((t) => t.id !== threadId);
+    if (this.activeThreadId === threadId) this.activeThreadId = null;
+    this.saveComments();
+  }
+
+  /** Focus a thread from a highlight click (opens the panel). */
+  openThread(threadId: string) {
+    this.activeThreadId = threadId;
+    this.commentsVisible = true;
+    this.tocVisible = false;
+    const thread = this.commentThreads.find((t) => t.id === threadId);
+    if (thread?.resolved && this.commentFilter === "open") this.commentFilter = "all";
+  }
+
+  /** Scroll the document to a thread's anchor (from a panel card click). */
+  revealThread(threadId: string) {
+    this.activeThreadId = threadId;
+    const mark = document.querySelector<HTMLElement>(
+      `mark.comment-hl[data-thread-id="${CSS.escape(threadId)}"]`,
+    );
+    if (mark && this.viewMode !== "editor") {
+      lockSync(700);
+      mark.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    const pos = this.editorThreadPos[threadId];
+    if (this.viewMode !== "preview" && this.editorView && pos) {
+      lockSync(700);
+      this.editorView.dispatch({
+        selection: { anchor: pos.from },
+        effects: EditorView.scrollIntoView(pos.from, { y: "center" }),
+      });
+    }
   }
 
   toggleSyncScroll() {
@@ -322,6 +469,7 @@ class AppState {
       this.savedContent = text;
       localStorage.setItem("inky.lastDoc", path);
       getCurrentWindow().setTitle(`${this.docName.replace(/\.(md|markdown|mmd)$/i, "")} — Inky`);
+      await this.loadComments();
     } catch (e) {
       if (!opts.silent) toast.error(`Could not open document: ${e}`);
     }
@@ -331,6 +479,9 @@ class AppState {
     this.currentPath = null;
     this.content = "";
     this.savedContent = "";
+    this.commentThreads = [];
+    this.commentDraft = null;
+    this.activeThreadId = null;
     localStorage.removeItem("inky.lastDoc");
     getCurrentWindow().setTitle("Inky");
   }

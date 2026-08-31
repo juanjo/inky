@@ -473,6 +473,34 @@
 }
 
 /* ---------------------------------- */
+/* Comment highlights                 */
+/* ---------------------------------- */
+
+.prose-doc mark.comment-hl,
+.editor-host .cm-comment-hl {
+  background: rgb(250 204 21 / 0.18);
+  border-bottom: 2px solid rgb(202 138 4 / 0.55);
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.prose-doc mark.comment-hl:hover {
+  background: rgb(250 204 21 / 0.32);
+}
+.prose-doc mark.comment-hl.active,
+.editor-host .cm-comment-hl-active {
+  background: rgb(250 204 21 / 0.4);
+  border-bottom-color: rgb(202 138 4 / 0.9);
+}
+
+@media print {
+  .prose-doc mark.comment-hl {
+    background: none !important;
+    border-bottom: none !important;
+  }
+}
+
+/* ---------------------------------- */
 /* In-document search highlights      */
 /* ---------------------------------- */
 

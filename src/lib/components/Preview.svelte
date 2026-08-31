@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { app } from "$lib/state.svelte";
+  import { app, type CommentDraft } from "$lib/state.svelte";
   import { renderMarkdown, renderMermaidBlocks, resetMermaidTheme } from "$lib/markdown";
   import { registerScroller } from "$lib/scrollsync";
+  import { wrapQuote, unwrapMarks, contextAround } from "$lib/comments";
+  import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
+  import CommentHoverCard from "./CommentHoverCard.svelte";
 
   let container: HTMLDivElement | undefined = $state();
   let scroller: HTMLDivElement | undefined = $state();
@@ -47,18 +50,104 @@
     }
   }
 
+  // --- comment highlights --------------------------------------------------
+  function applyCommentHighlights() {
+    if (!container) return;
+    unwrapMarks(container, "mark.comment-hl");
+    const order: Record<string, number> = {};
+    for (const t of app.commentThreads) {
+      if (t.resolved) continue;
+      const idx = wrapQuote(container, t);
+      if (idx >= 0) order[t.id] = idx;
+    }
+    app.threadOrder = order;
+  }
+
   // Mermaid needs a second pass over the real DOM, and a full redo on theme change.
   $effect(() => {
     html;
     const theme = app.theme;
+    app.commentThreads;
     if (!container) return;
-    tick().then(() => {
+    tick().then(async () => {
       if (container) {
-        renderMermaidBlocks(container, theme);
+        await renderMermaidBlocks(container, theme);
         resolveLocalImages();
+        applyCommentHighlights();
       }
     });
   });
+
+  // Emphasize the active thread's highlight.
+  $effect(() => {
+    const id = app.activeThreadId;
+    if (!container) return;
+    for (const m of container.querySelectorAll<HTMLElement>("mark.comment-hl")) {
+      m.classList.toggle("active", m.dataset.threadId === id);
+    }
+  });
+
+  // --- select-to-comment ---------------------------------------------------
+  let selAction = $state<{ x: number; y: number; draft: CommentDraft } | null>(null);
+
+  function onMouseUp() {
+    setTimeout(() => {
+      const sel = window.getSelection();
+      if (
+        app.isMermaidDoc ||
+        !sel ||
+        sel.isCollapsed ||
+        !container ||
+        !scroller ||
+        !container.contains(sel.getRangeAt(0).commonAncestorContainer)
+      ) {
+        selAction = null;
+        return;
+      }
+      const range = sel.getRangeAt(0);
+      const quote = range.toString();
+      if (!quote.trim() || quote.length > 1000) {
+        selAction = null;
+        return;
+      }
+      const rect = range.getBoundingClientRect();
+      const srect = scroller.getBoundingClientRect();
+      selAction = {
+        x: Math.max(8, Math.min(rect.right - srect.left, srect.width - 130)),
+        y: Math.max(4, rect.top - srect.top + scroller.scrollTop - 38),
+        draft: { quote, ...contextAround(container, range) },
+      };
+    }, 0);
+  }
+
+  function createComment() {
+    if (!selAction) return;
+    app.startCommentDraft(selAction.draft);
+    selAction = null;
+    window.getSelection()?.removeAllRanges();
+  }
+
+  // --- hover preview of comment threads ------------------------------------
+  let hoverCard = $state<{ id: string; x: number; y: number } | null>(null);
+  const hoverThread = $derived.by(() => {
+    const hc = hoverCard;
+    return hc ? (app.commentThreads.find((t) => t.id === hc.id) ?? null) : null;
+  });
+
+  function onHover(e: MouseEvent) {
+    const mark = (e.target as HTMLElement).closest?.<HTMLElement>("mark.comment-hl");
+    if (mark?.dataset.threadId && scroller) {
+      const rect = mark.getBoundingClientRect();
+      const srect = scroller.getBoundingClientRect();
+      hoverCard = {
+        id: mark.dataset.threadId,
+        x: Math.max(8, Math.min(rect.left - srect.left, srect.width - 280)),
+        y: rect.bottom - srect.top + scroller.scrollTop + 6,
+      };
+    } else {
+      hoverCard = null;
+    }
+  }
 
   $effect(() => {
     app.theme;
@@ -110,7 +199,7 @@
     let n: Node | null;
     while ((n = walker.nextNode())) {
       // Wrapping <mark> inside SVG (mermaid) would corrupt the diagram.
-      if (!(n.parentElement?.closest("svg, mark"))) nodes.push(n as Text);
+      if (!n.parentElement?.closest("svg, mark.search-hit")) nodes.push(n as Text);
     }
     for (const node of nodes) {
       const text = node.nodeValue ?? "";
@@ -157,6 +246,11 @@
   });
 
   function handleClick(event: MouseEvent) {
+    const mark = (event.target as HTMLElement).closest<HTMLElement>("mark.comment-hl");
+    if (mark?.dataset.threadId) {
+      app.openThread(mark.dataset.threadId);
+      return;
+    }
     // Open external links in the default browser instead of the webview.
     const anchor = (event.target as HTMLElement).closest("a");
     if (anchor?.href && /^https?:/.test(anchor.href)) {
@@ -166,15 +260,34 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_mouse_events_have_key_events -->
 <div
   bind:this={scroller}
-  class="print-scroll h-full overflow-y-auto px-8 py-10"
+  class="print-scroll relative h-full overflow-y-auto px-8 py-10"
   onclick={handleClick}
   onscroll={onScroll}
+  onmouseup={onMouseUp}
+  onmouseover={onHover}
+  onmouseleave={() => (hoverCard = null)}
 >
   <div class="prose-doc" bind:this={container}>
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
     {@html html}
   </div>
+  {#if selAction}
+    <button
+      class="no-print absolute z-20 flex items-center gap-1.5 rounded-full border bg-popover px-3 py-1.5 text-xs font-medium shadow-md transition-colors hover:bg-accent"
+      style="left: {selAction.x}px; top: {selAction.y}px"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={(e) => {
+        e.stopPropagation();
+        createComment();
+      }}
+    >
+      <MessageSquarePlus class="size-3.5" /> Comment
+    </button>
+  {/if}
+  {#if hoverThread && hoverCard}
+    <CommentHoverCard thread={hoverThread} x={hoverCard.x} y={hoverCard.y} />
+  {/if}
 </div>

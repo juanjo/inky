@@ -20,6 +20,7 @@
   import BookOpenText from "@lucide/svelte/icons/book-open-text";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import TableOfContents from "@lucide/svelte/icons/table-of-contents";
+  import MessageSquareText from "@lucide/svelte/icons/message-square-text";
   import UnfoldVertical from "@lucide/svelte/icons/unfold-vertical";
   import Search from "@lucide/svelte/icons/search";
   import type { ViewMode } from "$lib/types";
@@ -152,6 +153,31 @@
         {/snippet}
       </Tooltip.Trigger>
       <Tooltip.Content>Table of contents (⌘T)</Tooltip.Content>
+    </Tooltip.Root>
+
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        {#snippet child({ props })}
+          <Button
+            {...props}
+            variant="ghost"
+            size="icon"
+            class="relative {app.commentsVisible ? 'bg-accent' : ''}"
+            disabled={!app.currentPath || app.isMermaidDoc}
+            onclick={() => app.toggleComments()}
+          >
+            <MessageSquareText class="size-4" />
+            {#if app.openCommentCount > 0}
+              <span
+                class="absolute -top-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full bg-primary text-[9px] font-semibold text-primary-foreground tabular-nums"
+              >
+                {app.openCommentCount > 9 ? "9+" : app.openCommentCount}
+              </span>
+            {/if}
+          </Button>
+        {/snippet}
+      </Tooltip.Trigger>
+      <Tooltip.Content>Comments (⌘⇧C)</Tooltip.Content>
     </Tooltip.Root>
 
     <Tooltip.Root>

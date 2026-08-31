@@ -93,6 +93,12 @@ fn guard(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Hidden sidecar file holding a document's comment threads.
+fn sidecar_for(doc: &Path) -> Option<PathBuf> {
+    let name = doc.file_name()?.to_str()?;
+    Some(doc.parent()?.join(format!(".{name}.comments.json")))
+}
+
 fn is_doc(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -242,13 +248,50 @@ fn rename_path(app: tauri::AppHandle, path: String, new_name: String) -> Result<
         return Err("a file with that name already exists".into());
     }
     fs::rename(&p, &target).map_err(|e| e.to_string())?;
+    // Keep the comments sidecar attached to the document.
+    if let (Some(old_sc), Some(new_sc)) = (sidecar_for(&p), sidecar_for(&target)) {
+        if old_sc.exists() {
+            let _ = fs::rename(old_sc, new_sc);
+        }
+    }
     Ok(target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn read_comments(app: tauri::AppHandle, doc_path: String) -> Result<String, String> {
+    let doc = guard(&app, &doc_path)?;
+    let Some(sc) = sidecar_for(&doc) else {
+        return Ok(String::new());
+    };
+    match fs::read_to_string(sc) {
+        Ok(s) => Ok(s),
+        Err(_) => Ok(String::new()),
+    }
+}
+
+#[tauri::command]
+fn write_comments(app: tauri::AppHandle, doc_path: String, json: String) -> Result<(), String> {
+    let doc = guard(&app, &doc_path)?;
+    let sc = sidecar_for(&doc).ok_or("invalid document path")?;
+    if json.is_empty() {
+        if sc.exists() {
+            fs::remove_file(sc).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    fs::write(sc, json).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn delete_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let p = guard(&app, &path)?;
-    trash::delete(&p).map_err(|e| e.to_string())
+    trash::delete(&p).map_err(|e| e.to_string())?;
+    if let Some(sc) = sidecar_for(&p) {
+        if sc.exists() {
+            let _ = trash::delete(&sc);
+        }
+    }
+    Ok(())
 }
 
 /// Move a file or folder into another folder inside the library.
@@ -277,6 +320,11 @@ fn move_path(app: tauri::AppHandle, path: String, target_dir: String) -> Result<
         target = unique_path(&dst_dir, &stem, ext.as_deref());
     }
     fs::rename(&src, &target).map_err(|e| e.to_string())?;
+    if let (Some(old_sc), Some(new_sc)) = (sidecar_for(&src), sidecar_for(&target)) {
+        if old_sc.exists() {
+            let _ = fs::rename(old_sc, new_sc);
+        }
+    }
     Ok(target.to_string_lossy().into_owned())
 }
 
@@ -523,6 +571,11 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
                 .build(handle)?,
         )
         .item(
+            &MenuItemBuilder::with_id("toggle_comments", "Toggle Comments")
+                .accelerator("CmdOrCtrl+Shift+C")
+                .build(handle)?,
+        )
+        .item(
             &CheckMenuItemBuilder::with_id("sync_scroll", "Sync Scrolling in Split")
                 .checked(true)
                 .build(handle)?,
@@ -592,7 +645,9 @@ pub fn run() {
             path_exists,
             print_document,
             set_menu_checked,
-            save_image
+            save_image,
+            read_comments,
+            write_comments
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
