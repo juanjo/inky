@@ -60,13 +60,22 @@ pnpm tauri dev
 
 ## Packaging (share with friends)
 
-```sh
-pnpm bundle
-```
+Common actions live in the Makefile — run `make` (or `make help`) to list them:
 
-(`pnpm bundle` is `tauri build` with the update-signing key from
-`~/.tauri/inky.key`; plain `pnpm tauri build` fails now that updater
-artifacts are enabled.)
+| Target | What it does |
+| --- | --- |
+| `make dev` | Run the app with hot reload |
+| `make check` | Type-check frontend + Rust |
+| `make dmg` | Build the signed `.app`, `.dmg` and updater artifacts |
+| `make release` | `make dmg` + assemble `dist/release/` ready for a GitHub release (incl. `latest.json`) |
+| `make icons` | Regenerate all app icons from `assets/icon.svg` |
+| `make open` | Open the last built release app |
+| `make mcp` | Run the MCP server on stdio |
+| `make clean` | Remove build outputs |
+
+Builds are signed with `~/.tauri/inky.key` (override with `make dmg KEY=…`);
+plain `pnpm tauri build` fails now that updater artifacts are enabled
+(`pnpm bundle` still works as an alias for `make dmg`).
 
 This produces:
 
@@ -91,14 +100,9 @@ Updates…**. To make updates live:
 1. Create a GitHub repo for Inky and replace
    `REPLACE_WITH_YOUR_GITHUB_USER` in the updater endpoint in
    `src-tauri/tauri.conf.json`.
-2. Bump `version` in `src-tauri/tauri.conf.json`, run `pnpm bundle`.
-3. Create a GitHub release and upload, from
-   `src-tauri/target/release/bundle/`:
-   - the `.dmg` (for new users),
-   - `macos/Inky.app.tar.gz` and `macos/Inky.app.tar.gz.sig` (the update),
-   - a `latest.json` describing the release ([format docs](https://v2.tauri.app/plugin/updater/#static-json-file)),
-     pointing at the `.tar.gz` asset URL with the contents of the `.sig` file
-     as `signature`.
+2. Bump `version` in `src-tauri/tauri.conf.json`, run `make release`.
+3. Create a GitHub release tagged `v<version>` and upload the four files
+   from `dist/release/` (dmg, tar.gz, sig, latest.json).
 
 Updates are signed with `~/.tauri/inky.key` — back that file up; without it
 you can't ship updates to existing installs.
