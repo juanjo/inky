@@ -7,47 +7,73 @@ Tauri 2, Svelte 5, Tailwind CSS 4 and shadcn-svelte.
 
 ## Features
 
-- **Library sidebar** — documents live as plain `.md` files in `~/Documents/Inky`
-  (changeable via *… → Change library folder*). Folders, rename, move to Trash,
-  reveal in Finder (right-click or the row's `…` button), and drag & drop to
-  move documents between folders (drop on empty sidebar space to move to the
-  library root).
+### Library
+
+- Documents live as plain `.md` files in `~/Documents/Inky` (changeable via
+  *… → Change library folder*) — no database, no lock-in.
+- Folders, rename (right-click, the row's `…` button, or just click the
+  title in the toolbar), move to Trash, reveal in Finder.
+- Drag & drop documents and folders between folders; drop on empty sidebar
+  space to move to the library root.
+- **Quick open** — ⌘K fuzzy-finds any document.
+- **Paste as document** — copy markdown anywhere, hit ⌘⇧V and it becomes a
+  new document. Pasted mermaid source is detected and saved as a diagram.
+
+### Reading & writing
+
 - **Three views** — Reading (⌘1), Split (⌘2), Writing (⌘3) with a CodeMirror
-  markdown editor and live preview. Changes autosave.
-- **Paste as document** — copy markdown anywhere, hit ⌘⇧V (or the clipboard
-  button) and it becomes a new document. Pasted mermaid source is detected and
-  saved as a diagram.
-- **Mermaid** — ` ```mermaid ` fences render inside documents; `.mmd` files
-  render as standalone diagrams.
-- **PDF export** — ⌘E picks a destination and writes the PDF directly through a
-  native macOS print operation with proper page margins; ⌘P opens the print
-  dialog. Output is always clean black-on-white regardless of the app theme.
-- **Copy** — copy the markdown source or the rendered HTML.
-- **Themes** — Light, Dark, and Book (warm paper + serif typography).
-- **Reading settings** — the `Aa` toolbar popover adjusts font size
-  (Kindle-style steps, 85–170%) and text column width (Narrow → Full); both
-  persist across launches and apply to the editor as well as the preview. PDF
-  output ignores these and always uses document-natural sizing.
+  markdown editor and live preview. Changes autosave; live word count and
+  reading time sit next to the title.
+- **Split-view scroll sync** — editor and preview scroll together; toggle it
+  from the toolbar or the View menu.
 - **Table of contents** — ⌘T opens a right-hand panel listing every heading;
-  click to jump (works in reading, split, and writing modes), and the current
-  section stays highlighted while you scroll.
-- **Split-view scroll sync** — editor and preview scroll together in split
-  mode; toggle it from the toolbar or View menu.
-- **Find in document** — ⌘F searches the open document with match
-  highlighting and next/previous navigation, in both the preview and the
-  editor. (For search across all documents, ask an agent via the MCP server's
-  `search_documents` tool.)
-- **Native menu bar** — File/Edit/View menus cover documents, export, themes,
-  text width, font size, and view toggles with standard macOS shortcuts.
-- **Local images** — relative image paths render in the preview, and pasting
-  an image into the editor saves it to an `assets/` folder next to the
-  document and inserts the link.
-- **Quick open** — ⌘K fuzzy-finds any document in the library.
-- **Math & footnotes** — KaTeX (`$…$`, `$$…$$`) and GFM-style footnotes
-  (`[^1]`) render in the preview and in PDFs.
+  click to jump (in any view), and the current section stays highlighted
+  while you scroll.
+- **Find in document** — ⌘F with match highlighting and next/previous
+  navigation, in both the preview and the editor.
 - **Focus mode** — ⌘⇧F hides everything but the editor and dims all but the
   paragraph you're writing.
-- **Word count** — live word count and reading time next to the title.
+- **Themes** — Light, Dark (anthracite, not black), and Book (warm paper +
+  serif typography).
+- **Reading settings** — the `Aa` popover adjusts font size (Kindle-style
+  steps, 85–170%) and text column width (Default → Full in five steps); both
+  persist and apply to the editor as well as the preview.
+- Sidebar, TOC and comments panels are drag-resizable.
+
+### Comments
+
+- Select text in reading or writing mode and click **Comment** to start a
+  thread — your questions and ideas, Google-Docs style.
+- Reply to threads, **resolve/reopen** them, delete them; filter the panel
+  (⌘⇧C) by **All / Open / Resolved**.
+- Open threads highlight their text in both preview and editor; hover a
+  highlight for a preview card, click it to open the thread.
+- Comments are anchored to the quoted text plus context, so they survive
+  edits elsewhere; if the text is deleted the thread is kept and flagged.
+- Stored in a hidden sidecar (`.«name».comments.json`) next to each document
+  — your markdown stays clean, and rename/move/trash carries comments along.
+
+### Rendering
+
+- **Mermaid** — ` ```mermaid ` fences render inside documents; `.mmd` files
+  render as standalone diagrams.
+- **Math & footnotes** — KaTeX (`$…$`, `$$…$$`) and GFM-style footnotes
+  (`[^1]`).
+- **Local images** — relative image paths render in the preview; pasting an
+  image into the editor saves it to an `assets/` folder next to the document
+  and inserts the link.
+- **PDF export** — ⌘E writes a PDF through a native macOS print operation
+  with proper page margins and document-natural type, regardless of theme or
+  reading settings; ⌘P opens the print dialog.
+- **Copy** — the markdown source or the rendered HTML.
+
+### App
+
+- **Native menu bar** — File/Edit/View menus cover documents, export,
+  themes, text width, font size and view toggles with standard shortcuts.
+- **Auto-updates** — checks on launch and via *Inky → Check for Updates…*
+  (see below).
+- **MCP server** — agents can read and write your library (see below).
 
 ## Development
 
@@ -55,7 +81,7 @@ Prerequisites: Rust (stable), Node 20+, pnpm.
 
 ```sh
 pnpm install
-pnpm tauri dev
+make dev
 ```
 
 ## Packaging (share with friends)
@@ -77,10 +103,10 @@ Builds are signed with `~/.tauri/inky.key` (override with `make dmg KEY=…`);
 plain `pnpm tauri build` fails now that updater artifacts are enabled
 (`pnpm bundle` still works as an alias for `make dmg`).
 
-This produces:
+`make dmg` produces:
 
 - `src-tauri/target/release/bundle/macos/Inky.app`
-- `src-tauri/target/release/bundle/dmg/Inky_0.1.0_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/Inky_<version>_aarch64.dmg`
 
 Send the `.dmg`. Since the app is not notarized with an Apple Developer ID,
 the first launch on a friend's Mac requires either **right-click → Open**, or:
@@ -132,14 +158,15 @@ library under Meetings/"* or *"read my Inky doc 'Ideas' and summarize it"*.
 | Shortcut | Action |
 | --- | --- |
 | ⌘N | New document |
+| ⌘K | Quick open |
 | ⌘S | Save (autosave also runs) |
 | ⌘E | Export PDF |
 | ⌘P | Print |
 | ⌘⇧V | Paste clipboard as new document |
 | ⌘1 / ⌘2 / ⌘3 | Reading / Split / Writing view |
-| ⌘K | Quick open |
 | ⌘F | Find in document |
 | ⌘⇧F | Focus mode |
-| ⌘+ / ⌘− | Font size |
-| ⌘B (or ⌘\) | Toggle sidebar |
+| ⌘⇧C | Toggle comments |
 | ⌘T | Toggle table of contents |
+| ⌘B (or ⌘\) | Toggle sidebar |
+| ⌘+ / ⌘− | Font size |
