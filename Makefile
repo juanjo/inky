@@ -23,10 +23,14 @@ dmg: ## Build the signed .app, .dmg and updater artifacts
 release: dmg ## Build and assemble a GitHub-release folder in dist/release
 	node scripts/release.mjs
 
-icons: ## Regenerate all app icons from assets/icon.svg
-	qlmanage -t -s 1024 -o /tmp assets/icon.svg >/dev/null
-	pnpm tauri icon /tmp/icon.svg.png
-	rm -f /tmp/icon.svg.png
+CHROME := /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+
+icons: ## Regenerate all app icons from assets/icon.svg (transparent bg)
+	"$(CHROME)" --headless --disable-gpu --screenshot=/tmp/inky-icon.png \
+		--window-size=1024,1024 --default-background-color=00000000 \
+		--hide-scrollbars "file://$(PWD)/assets/icon.svg" 2>/dev/null
+	pnpm tauri icon /tmp/inky-icon.png
+	rm -f /tmp/inky-icon.png
 
 open: ## Open the last built release app
 	open $(BUNDLE_DIR)/macos/Inky.app
