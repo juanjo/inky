@@ -150,7 +150,8 @@ function renderThread(t) {
   return `- ${t.id} (${status})\n  quote: "${quote}"\n${msgs}`;
 }
 
-const server = new McpServer({ name: "inky", version: "0.1.0" });
+export function createServer() {
+  const server = new McpServer({ name: "inky", version: "0.1.0" });
 
 server.registerTool(
   "list_documents",
@@ -490,16 +491,69 @@ server.registerTool(
   },
 );
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+  return server;
+}
 
-// Status goes to stderr — stdout carries the MCP JSON-RPC protocol.
-const root = await libraryRoot();
-console.error(`Inky MCP server running on stdio
-  Library: ${root}
-  Tools:   list_documents, read_document, write_document, create_folder,
-           delete_document, search_documents, list_comments, create_comment,
-           reply_to_comment, resolve_comment
+const TOOL_SUMMARY = `list_documents, read_document, write_document, patch_document,
+           rename_document, move_document, create_folder, delete_document,
+           search_documents, list_comments, create_comment, reply_to_comment,
+           resolve_comment`;
+
+/** Streamable-HTTP mode (stateless): used when the Inky app hosts the server. */
+async function serveHttp(port) {
+  const { StreamableHTTPServerTransport } = await import(
+    "@modelcontextprotocol/sdk/server/streamableHttp.js"
+  );
+  const http = await import("node:http");
+  const httpServer = http.createServer(async (req, res) => {
+    if (!req.url?.startsWith("/mcp")) {
+      res.writeHead(404).end();
+      return;
+    }
+    if (req.method !== "POST") {
+      res
+        .writeHead(405, { Allow: "POST", "Content-Type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed" }, id: null }));
+      return;
+    }
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    try {
+      const server = createServer();
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on("close", () => {
+        transport.close();
+        server.close();
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, JSON.parse(body));
+    } catch (err) {
+      if (!res.headersSent) {
+        res
+          .writeHead(500, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: String(err) }, id: null }));
+      }
+    }
+  });
+  httpServer.listen(port, "127.0.0.1", async () => {
+    console.error(`Inky MCP server (HTTP) on http://127.0.0.1:${port}/mcp
+  Library: ${await libraryRoot()}
+  Tools:   ${TOOL_SUMMARY}
+
+Register with:  claude mcp add --transport http inky http://127.0.0.1:${port}/mcp`);
+  });
+}
+
+const httpFlag = process.argv.indexOf("--http");
+if (httpFlag !== -1) {
+  await serveHttp(Number(process.argv[httpFlag + 1]) || 26317);
+} else {
+  const server = createServer();
+  await server.connect(new StdioServerTransport());
+  // Status goes to stderr — stdout carries the MCP JSON-RPC protocol.
+  console.error(`Inky MCP server running on stdio
+  Library: ${await libraryRoot()}
+  Tools:   ${TOOL_SUMMARY}
 
 This process is meant to be launched by an MCP client (it waits for JSON-RPC
 on stdin — that's why nothing else appears here). Register it with:
@@ -507,3 +561,4 @@ on stdin — that's why nothing else appears here). Register it with:
   claude mcp add --scope user inky -- node ${path.join(import.meta.dirname, "server.mjs")}
 
 Press Ctrl+C to stop.`);
+}

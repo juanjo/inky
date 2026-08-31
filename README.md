@@ -73,7 +73,14 @@ Tauri 2, Svelte 5, Tailwind CSS 4 and shadcn-svelte.
   themes, text width, font size and view toggles with standard shortcuts.
 - **Auto-updates** — checks on launch and via *Inky → Check for Updates…*
   (see below).
-- **MCP server** — agents can read and write your library (see below).
+- **MCP server** — agents can read and write your library (see below). Start
+  it from inside the app via *… → Start MCP server* (no terminal needed).
+- **Safety** — unsaved changes are flushed on window blur, close, and ⌘Q;
+  every content-changing overwrite keeps the previous version in a hidden
+  `.inky-history/` folder next to the document (max one per 10 minutes, last
+  20 kept); edits that collide with on-disk changes warn instead of silently
+  losing either side. Single-instance guard and window-state restore
+  included.
 
 ## Development
 
@@ -151,6 +158,14 @@ here get it automatically. To register it globally:
 
 ```sh
 claude mcp add --scope user inky -- node /path/to/inky/mcp/server.mjs
+```
+
+The server also has an HTTP mode (`--http [port]`), which is what the app's
+*… → Start MCP server* button runs (a bundled copy on port 26317, restarted
+automatically on next launch until you stop it). Register that one with:
+
+```sh
+claude mcp add --transport http inky http://127.0.0.1:26317/mcp
 ```
 
 Then ask an agent things like *"write yesterday's meeting notes into my Inky

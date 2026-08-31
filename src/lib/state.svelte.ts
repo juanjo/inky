@@ -64,6 +64,11 @@ class AppState {
   librarySearchVisible = $state(false);
   /** Query the in-document search bar should run once it opens. */
   pendingSearchQuery: string | null = null;
+  /** URL of the app-hosted MCP server while it's running. */
+  mcpUrl = $state<string | null>(null);
+
+  /** Disk mtime of the open document at last read/write (conflict detection). */
+  #docMtime: number | null = null;
 
   commentsVisible = $state(false);
   commentThreads = $state<CommentThread[]>([]);
@@ -146,10 +151,62 @@ class AppState {
 
     // Pick up documents created outside the app (e.g. via the MCP server).
     window.addEventListener("focus", () => this.syncFromDisk());
+    // Never let a debounced autosave die with the focus.
+    window.addEventListener("blur", () => {
+      if (this.dirty) this.save();
+    });
+    // Red-button close: flush unsaved changes first.
+    getCurrentWindow().onCloseRequested(async (event) => {
+      if (this.dirty) {
+        event.preventDefault();
+        await this.save();
+        getCurrentWindow().destroy();
+      }
+    });
 
     this.syncMenuChecks();
     // Silent startup update check (no-op until an update endpoint is live).
     this.checkForUpdates(false);
+    if (localStorage.getItem("inky.mcpAutostart") === "true") {
+      this.startMcpServer(false);
+    }
+  }
+
+  /** ⌘Q — save, then exit. */
+  async quitApp() {
+    if (this.dirty) await this.save();
+    await invoke("quit_app");
+  }
+
+  async startMcpServer(announce: boolean) {
+    try {
+      const url = await invoke<string>("start_mcp", { port: 26317 });
+      this.mcpUrl = url;
+      localStorage.setItem("inky.mcpAutostart", "true");
+      if (announce) {
+        toast.success(`MCP server running at ${url}`, {
+          duration: 12000,
+          action: {
+            label: "Copy setup command",
+            onClick: () => writeText(`claude mcp add --transport http inky ${url}`),
+          },
+        });
+      }
+    } catch (e) {
+      this.mcpUrl = null;
+      toast.error(`Could not start MCP server: ${e}`);
+    }
+  }
+
+  async toggleMcpServer() {
+    if (this.mcpUrl) {
+      await invoke("stop_mcp");
+      this.mcpUrl = null;
+      localStorage.setItem("inky.mcpAutostart", "false");
+      toast.success("MCP server stopped");
+    } else {
+      await this.startMcpServer(true);
+    }
   }
 
   /** Push toggle/radio state into the native menu bar. */
@@ -457,12 +514,19 @@ class AppState {
           this.savedContent = disk;
           this.content = disk;
         }
+        this.#docMtime = await invoke<number>("doc_mtime", { path: this.currentPath }).catch(
+          () => null,
+        );
       } catch {
         // File disappeared from disk; keep the buffer so the user can re-save.
       }
     }
     // Pick up comment threads written by agents via the MCP server.
     await this.reloadCommentsFromDisk();
+    // Reflect the hosted MCP server dying (e.g. node killed externally).
+    if (this.mcpUrl && !(await invoke<boolean>("mcp_status").catch(() => false))) {
+      this.mcpUrl = null;
+    }
   }
 
   /** Refresh threads from the sidecar without touching draft/selection state. */
@@ -501,6 +565,7 @@ class AppState {
       this.currentPath = path;
       this.content = text;
       this.savedContent = text;
+      this.#docMtime = await invoke<number>("doc_mtime", { path }).catch(() => null);
       localStorage.setItem("inky.lastDoc", path);
       getCurrentWindow().setTitle(`${this.docName.replace(/\.(md|markdown|mmd)$/i, "")} — Inky`);
       await this.loadComments();
@@ -529,8 +594,20 @@ class AppState {
     const path = this.currentPath;
     const text = this.content;
     try {
+      // Warn if the file changed on disk while we were editing (an agent via
+      // MCP, another machine, …). write_doc snapshots the disk version first,
+      // so nothing is lost — but the user should know.
+      if (this.#docMtime !== null) {
+        const current = await invoke<number>("doc_mtime", { path }).catch(() => null);
+        if (current !== null && current !== this.#docMtime) {
+          toast.warning(
+            "This document changed on disk while you were editing. Your version was saved; the other one was kept in .inky-history.",
+          );
+        }
+      }
       await invoke("write_doc", { path, content: text });
       this.savedContent = text;
+      this.#docMtime = await invoke<number>("doc_mtime", { path }).catch(() => null);
     } catch (e) {
       toast.error(`Save failed: ${e}`);
     }

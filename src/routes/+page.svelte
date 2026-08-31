@@ -55,6 +55,7 @@
       theme_book: () => app.setTheme("book"),
       font_plus: () => app.adjustFontScale(1),
       font_minus: () => app.adjustFontScale(-1),
+      quit_app: () => app.quitApp(),
     };
     if (id.startsWith("width_")) {
       app.setReadingWidth(id.slice(6) as ReadingWidth);

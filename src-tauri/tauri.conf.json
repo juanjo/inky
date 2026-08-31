@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.inky.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm mcp:bundle && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm mcp:bundle && pnpm build",
     "frontendDist": "../build"
   },
   "app": {
@@ -41,6 +41,7 @@
     "active": true,
     "targets": ["app", "dmg"],
     "createUpdaterArtifacts": true,
+    "resources": ["../mcp/server.bundle.mjs"],
     "category": "Productivity",
     "shortDescription": "A pleasant markdown reader and editor",
     "icon": [

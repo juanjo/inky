@@ -490,6 +490,91 @@ fn save_image(
 /// Print the current page with proper page margins. With `save_path` the PDF is
 /// written silently; without it the native print panel opens.
 #[tauri::command]
+fn doc_mtime(app: tauri::AppHandle, path: String) -> Result<u64, String> {
+    let p = guard(&app, &path)?;
+    let meta = fs::metadata(p).map_err(|e| e.to_string())?;
+    meta.modified()
+        .map_err(|e| e.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+// --- app-hosted MCP server (node subprocess in HTTP mode) -------------------
+
+struct McpProc(std::sync::Mutex<Option<std::process::Child>>);
+
+fn kill_mcp(state: &McpProc) {
+    if let Ok(mut guard) = state.0.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[tauri::command]
+fn mcp_status(state: tauri::State<McpProc>) -> bool {
+    let mut guard = state.0.lock().unwrap();
+    match guard.as_mut() {
+        Some(child) => match child.try_wait() {
+            Ok(None) => true,
+            _ => {
+                *guard = None;
+                false
+            }
+        },
+        None => false,
+    }
+}
+
+#[tauri::command]
+fn start_mcp(
+    app: tauri::AppHandle,
+    state: tauri::State<McpProc>,
+    port: u16,
+) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    {
+        let mut guard = state.0.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            if matches!(child.try_wait(), Ok(None)) {
+                return Ok(url);
+            }
+        }
+    }
+    let script = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("server.bundle.mjs");
+    if !script.exists() {
+        return Err(format!("MCP server script not found at {}", script.display()));
+    }
+    let child = std::process::Command::new("node")
+        .arg(&script)
+        .arg("--http")
+        .arg(port.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not start node (is Node.js installed?): {e}"))?;
+    *state.0.lock().unwrap() = Some(child);
+    Ok(url)
+}
+
+#[tauri::command]
+fn stop_mcp(state: tauri::State<McpProc>) {
+    kill_mcp(&state);
+}
+
+#[tauri::command]
 fn print_document(window: tauri::WebviewWindow, save_path: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -597,7 +682,12 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         .hide_others()
         .show_all()
         .separator()
-        .quit()
+        // Custom quit so the frontend can flush unsaved changes first.
+        .item(
+            &MenuItemBuilder::with_id("quit_app", "Quit Inky")
+                .accelerator("CmdOrCtrl+Q")
+                .build(handle)?,
+        )
         .build()?;
 
     let file_sub = SubmenuBuilder::new(handle, "File")
@@ -749,11 +839,20 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     use tauri::Emitter;
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Second launch: focus the existing window instead.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(McpProc(std::sync::Mutex::new(None)))
         .setup(|app| {
             build_menu(app)?;
             Ok(())
@@ -778,8 +877,19 @@ pub fn run() {
             save_image,
             read_comments,
             write_comments,
-            search_library
+            search_library,
+            doc_mtime,
+            quit_app,
+            start_mcp,
+            stop_mcp,
+            mcp_status
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Don't leave the MCP node subprocess orphaned.
+                kill_mcp(&app_handle.state::<McpProc>());
+            }
+        });
 }

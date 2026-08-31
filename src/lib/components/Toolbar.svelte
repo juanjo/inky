@@ -357,6 +357,14 @@
         <DropdownMenu.Item onclick={() => app.refreshTree()}>Refresh library</DropdownMenu.Item>
         <DropdownMenu.Item onclick={revealLibrary}>Reveal library in Finder</DropdownMenu.Item>
         <DropdownMenu.Separator />
+        <DropdownMenu.Item onclick={() => app.toggleMcpServer()}>
+          {#if app.mcpUrl}
+            <span class="size-1.5 rounded-full bg-green-500"></span> Stop MCP server
+          {:else}
+            Start MCP server
+          {/if}
+        </DropdownMenu.Item>
+        <DropdownMenu.Separator />
         <DropdownMenu.Item onclick={() => app.chooseLibrary()}>
           Change library folder…
         </DropdownMenu.Item>

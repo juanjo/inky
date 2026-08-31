@@ -117,6 +117,11 @@ export function renderMarkdown(src: string): string {
   const html = marked.parse(src, { async: false }) as string;
   return DOMPurify.sanitize(html, {
     ADD_ATTR: ["data-mermaid"],
+    // Without this, heading ids that collide with document/window properties
+    // ("title", "location", "history", …) get stripped as DOM clobbering,
+    // silently breaking TOC anchors. We render into a local app view and never
+    // resolve globals through the DOM, so the clobbering vector doesn't apply.
+    SANITIZE_DOM: false,
   });
 }
 
