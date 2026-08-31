@@ -1,0 +1,564 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------- */
+/* Theme tokens                       */
+/* ---------------------------------- */
+
+:root {
+  --radius: 0.5rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.141 0.005 285.823);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.141 0.005 285.823);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.141 0.005 285.823);
+  --primary: oklch(0.21 0.006 285.885);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.967 0.001 286.375);
+  --secondary-foreground: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.967 0.001 286.375);
+  --muted-foreground: oklch(0.552 0.016 285.938);
+  --accent: oklch(0.967 0.001 286.375);
+  --accent-foreground: oklch(0.21 0.006 285.885);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.92 0.004 286.32);
+  --input: oklch(0.92 0.004 286.32);
+  --ring: oklch(0.705 0.015 286.067);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.141 0.005 285.823);
+  --sidebar-border: oklch(0.92 0.004 286.32);
+
+  /* prose */
+  --prose-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --prose-size: 1rem;
+  --prose-leading: 1.75;
+  --prose-max-width: 46rem;
+  --prose-heading-font: var(--prose-font);
+  --prose-link: oklch(0.488 0.217 264.052);
+  --prose-code-bg: oklch(0.96 0.004 286.32);
+  --prose-quote-border: oklch(0.87 0.006 286.32);
+
+  /* code tokens */
+  --hl-comment: #6a737d;
+  --hl-keyword: #d73a49;
+  --hl-string: #032f62;
+  --hl-title: #6f42c1;
+  --hl-number: #005cc5;
+  --hl-attr: #22863a;
+
+  --editor-selection: oklch(0.62 0.19 260 / 22%);
+}
+
+/* Anthracite: warm dark gray, never pure black */
+.dark {
+  --background: oklch(0.245 0.006 264);
+  --foreground: oklch(0.95 0.004 264);
+  --card: oklch(0.285 0.006 264);
+  --card-foreground: oklch(0.95 0.004 264);
+  --popover: oklch(0.285 0.006 264);
+  --popover-foreground: oklch(0.95 0.004 264);
+  --primary: oklch(0.92 0.004 286.32);
+  --primary-foreground: oklch(0.245 0.006 264);
+  --secondary: oklch(0.32 0.006 264);
+  --secondary-foreground: oklch(0.95 0.004 264);
+  --muted: oklch(0.32 0.006 264);
+  --muted-foreground: oklch(0.72 0.012 264);
+  --accent: oklch(0.34 0.007 264);
+  --accent-foreground: oklch(0.95 0.004 264);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.95 0.004 264);
+  --border: oklch(1 0 0 / 13%);
+  --input: oklch(1 0 0 / 17%);
+  --ring: oklch(0.58 0.014 264);
+  --sidebar: oklch(0.27 0.006 264);
+  --sidebar-foreground: oklch(0.95 0.004 264);
+  --sidebar-border: oklch(1 0 0 / 11%);
+
+  --prose-link: oklch(0.707 0.165 254.624);
+  --prose-code-bg: oklch(0.3 0.006 264);
+  --prose-quote-border: oklch(0.42 0.008 264);
+
+  --hl-comment: #8b949e;
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-title: #d2a8ff;
+  --hl-number: #79c0ff;
+  --hl-attr: #7ee787;
+
+  --editor-selection: oklch(0.62 0.19 260 / 38%);
+}
+
+/* Book mode: warm paper, serif reading typography */
+.book {
+  --background: oklch(0.955 0.018 84);
+  --foreground: oklch(0.3 0.03 60);
+  --card: oklch(0.97 0.014 84);
+  --card-foreground: oklch(0.3 0.03 60);
+  --popover: oklch(0.97 0.014 84);
+  --popover-foreground: oklch(0.3 0.03 60);
+  --primary: oklch(0.42 0.06 50);
+  --primary-foreground: oklch(0.97 0.014 84);
+  --secondary: oklch(0.91 0.02 84);
+  --secondary-foreground: oklch(0.35 0.04 55);
+  --muted: oklch(0.91 0.02 84);
+  --muted-foreground: oklch(0.5 0.03 60);
+  --accent: oklch(0.89 0.025 80);
+  --accent-foreground: oklch(0.32 0.04 55);
+  --destructive: oklch(0.55 0.2 28);
+  --destructive-foreground: oklch(0.97 0.014 84);
+  --border: oklch(0.87 0.02 80);
+  --input: oklch(0.87 0.02 80);
+  --ring: oklch(0.6 0.05 60);
+  --sidebar: oklch(0.935 0.02 84);
+  --sidebar-foreground: oklch(0.3 0.03 60);
+  --sidebar-border: oklch(0.87 0.02 80);
+
+  --prose-font: "Iowan Old Style", "Palatino", "Georgia", serif;
+  --prose-size: 1.0625rem;
+  --prose-leading: 1.85;
+  --prose-max-width: 42rem;
+  --prose-heading-font: var(--prose-font);
+  --prose-link: oklch(0.45 0.1 40);
+  --prose-code-bg: oklch(0.9 0.02 84);
+  --prose-quote-border: oklch(0.8 0.03 80);
+
+  --hl-comment: #8a7a66;
+  --hl-keyword: #a0430a;
+  --hl-string: #5c661f;
+  --hl-title: #7d4a9e;
+  --hl-number: #14657f;
+  --hl-attr: #3f6d34;
+
+  --editor-selection: oklch(0.78 0.09 85 / 50%);
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body {
+    height: 100%;
+    overscroll-behavior: none;
+  }
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+  }
+}
+
+/* ---------------------------------- */
+/* Markdown preview typography        */
+/* ---------------------------------- */
+
+.prose-doc {
+  font-family: var(--prose-font);
+  font-size: calc(var(--prose-size) * var(--prose-scale, 1));
+  line-height: var(--prose-leading);
+  max-width: var(--prose-width, var(--prose-max-width));
+  margin-inline: auto;
+  color: var(--foreground);
+  user-select: text;
+  cursor: auto;
+  word-wrap: break-word;
+}
+
+.prose-doc > :first-child {
+  margin-top: 0;
+}
+
+.prose-doc h1,
+.prose-doc h2,
+.prose-doc h3,
+.prose-doc h4,
+.prose-doc h5,
+.prose-doc h6 {
+  font-family: var(--prose-heading-font);
+  font-weight: 650;
+  line-height: 1.3;
+  margin: 2em 0 0.6em;
+  letter-spacing: -0.01em;
+}
+.prose-doc h1 {
+  font-size: 2em;
+  margin-top: 0.8em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.prose-doc h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--border);
+}
+.prose-doc h3 {
+  font-size: 1.25em;
+}
+.prose-doc h4 {
+  font-size: 1.05em;
+}
+.prose-doc p {
+  margin: 0.9em 0;
+}
+.prose-doc a {
+  color: var(--prose-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+.prose-doc strong {
+  font-weight: 650;
+}
+.prose-doc ul,
+.prose-doc ol {
+  padding-left: 1.6em;
+  margin: 0.9em 0;
+}
+.prose-doc ul {
+  list-style: disc;
+}
+.prose-doc ol {
+  list-style: decimal;
+}
+.prose-doc li {
+  margin: 0.3em 0;
+}
+.prose-doc li > ul,
+.prose-doc li > ol {
+  margin: 0.3em 0;
+}
+.prose-doc li.task-item {
+  list-style: none;
+  margin-left: -1.6em;
+  padding-left: 1.6em;
+}
+.prose-doc li.task-item input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--primary);
+}
+.prose-doc blockquote {
+  border-left: 3px solid var(--prose-quote-border);
+  padding-left: 1em;
+  margin: 1.2em 0;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+.prose-doc hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2.5em auto;
+  width: 60%;
+}
+.prose-doc code {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  font-size: 0.875em;
+  background: var(--prose-code-bg);
+  border-radius: 5px;
+  padding: 0.15em 0.4em;
+}
+.prose-doc pre {
+  background: var(--prose-code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1em 1.2em;
+  overflow-x: auto;
+  margin: 1.2em 0;
+  line-height: 1.55;
+}
+.prose-doc pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+.prose-doc table {
+  border-collapse: collapse;
+  margin: 1.2em 0;
+  width: 100%;
+  display: block;
+  overflow-x: auto;
+  font-size: 0.95em;
+}
+.prose-doc th,
+.prose-doc td {
+  border: 1px solid var(--border);
+  padding: 0.45em 0.9em;
+  text-align: left;
+}
+.prose-doc th {
+  background: var(--muted);
+  font-weight: 600;
+}
+.prose-doc img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+.prose-doc .mermaid-block {
+  margin: 1.4em 0;
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+.prose-doc .mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+}
+.prose-doc .mermaid-error {
+  border: 1px solid var(--destructive);
+  border-radius: 8px;
+  padding: 0.8em 1em;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.8em;
+  color: var(--destructive);
+  white-space: pre-wrap;
+  width: 100%;
+}
+
+/* highlight.js token colors driven by theme vars */
+.prose-doc .hljs-comment,
+.prose-doc .hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.prose-doc .hljs-keyword,
+.prose-doc .hljs-selector-tag,
+.prose-doc .hljs-meta,
+.prose-doc .hljs-doctag {
+  color: var(--hl-keyword);
+}
+.prose-doc .hljs-string,
+.prose-doc .hljs-regexp {
+  color: var(--hl-string);
+}
+.prose-doc .hljs-title,
+.prose-doc .hljs-section,
+.prose-doc .hljs-name,
+.prose-doc .hljs-type,
+.prose-doc .hljs-class {
+  color: var(--hl-title);
+}
+.prose-doc .hljs-number,
+.prose-doc .hljs-literal,
+.prose-doc .hljs-built_in,
+.prose-doc .hljs-symbol {
+  color: var(--hl-number);
+}
+.prose-doc .hljs-attr,
+.prose-doc .hljs-attribute,
+.prose-doc .hljs-variable,
+.prose-doc .hljs-template-variable,
+.prose-doc .hljs-addition {
+  color: var(--hl-attr);
+}
+.prose-doc .hljs-deletion {
+  color: var(--hl-keyword);
+}
+.prose-doc .hljs-emphasis {
+  font-style: italic;
+}
+.prose-doc .hljs-strong {
+  font-weight: 600;
+}
+
+/* ---------------------------------- */
+/* CodeMirror editor                  */
+/* ---------------------------------- */
+
+.editor-host {
+  height: 100%;
+}
+.editor-host .cm-editor {
+  height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 0.875rem;
+}
+.editor-host .cm-editor.cm-focused {
+  outline: none;
+}
+.editor-host .cm-scroller {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  line-height: 1.7;
+  padding: 1rem 0.5rem 40vh;
+}
+/* The editor respects the same reading width and font-size settings as the
+   preview (set as --prose-width / --prose-scale on the root element). */
+.editor-host .cm-content {
+  max-width: var(--prose-width, 46rem);
+  margin-inline: auto;
+  font-size: calc(0.875rem * var(--prose-scale, 1));
+}
+.editor-host .cm-gutters {
+  background: var(--background);
+  color: var(--muted-foreground);
+  border-right: none;
+  opacity: 0.6;
+}
+.editor-host .cm-activeLine {
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+}
+.editor-host .cm-activeLineGutter {
+  background: transparent;
+  color: var(--foreground);
+}
+.editor-host .cm-cursor {
+  border-left-color: var(--foreground);
+}
+.editor-host .cm-selectionBackground {
+  background: var(--editor-selection) !important;
+}
+/* CodeMirror paints its own selection layer; keep the native one transparent
+   so the two don't stack into an unreadably dark highlight. */
+.editor-host .cm-editor ::selection {
+  background: transparent !important;
+}
+
+/* Focus mode: dim everything outside the current paragraph */
+.editor-host .cm-dim {
+  opacity: 0.32;
+  transition: opacity 0.25s ease;
+}
+
+/* KaTeX display math can be wide */
+.prose-doc .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+
+/* Footnotes */
+.prose-doc .footnotes {
+  margin-top: 3em;
+  font-size: 0.875em;
+  color: var(--muted-foreground);
+}
+.prose-doc .footnotes ol {
+  padding-left: 1.4em;
+}
+.prose-doc sup a {
+  text-decoration: none;
+  font-weight: 600;
+}
+
+/* ---------------------------------- */
+/* In-document search highlights      */
+/* ---------------------------------- */
+
+.prose-doc mark.search-hit,
+.editor-host .cm-search-hit {
+  background: rgb(250 204 21 / 0.4);
+  color: inherit;
+  border-radius: 2px;
+}
+.prose-doc mark.search-hit.active,
+.editor-host .cm-search-hit-active {
+  background: rgb(249 115 22 / 0.55);
+}
+
+/* ---------------------------------- */
+/* Print (PDF export)                 */
+/* ---------------------------------- */
+
+/* Page margins come from the native print operation (NSPrintInfo); CSS margins
+   on top of that would double up. */
+@page {
+  margin: 0;
+}
+
+@media print {
+  /* Lay the page out at the paper's content width (~1in margins on A4/Letter
+     come from the native print operation). A fixed physical width means the
+     print engine never has to scale the content down, so type comes out at
+     its natural size no matter the window or app font-scale. */
+  html,
+  body {
+    height: auto !important;
+    width: 6.3in !important;
+    background: white !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  /* Portalled overlays (tooltips, menus, dialogs, toasts) mount directly on
+     body and must never end up in the PDF. */
+  body > :not(#app-root) {
+    display: none !important;
+  }
+  .print-root {
+    position: static !important;
+    display: block !important;
+    width: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  .print-scroll {
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+  .prose-doc {
+    width: 6.3in !important;
+    max-width: 6.3in !important;
+    margin: 0 !important;
+    /* Document-like type, independent of the on-screen reading settings */
+    --prose-scale: 1;
+    --prose-size: 11pt;
+    --prose-leading: 1.6;
+    color: #111 !important;
+    --prose-link: #1a4fa0;
+    --prose-code-bg: #f4f4f4;
+    --prose-quote-border: #ccc;
+    --border: #ddd;
+    --muted: #f4f4f4;
+    --muted-foreground: #555;
+    --hl-comment: #6a737d;
+    --hl-keyword: #d73a49;
+    --hl-string: #032f62;
+    --hl-title: #6f42c1;
+    --hl-number: #005cc5;
+    --hl-attr: #22863a;
+  }
+  .prose-doc pre,
+  .prose-doc blockquote,
+  .prose-doc table,
+  .prose-doc .mermaid-block {
+    break-inside: avoid;
+  }
+  .prose-doc h1,
+  .prose-doc h2,
+  .prose-doc h3 {
+    break-after: avoid;
+  }
+}
