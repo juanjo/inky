@@ -81,6 +81,43 @@ function text(value) {
   return { content: [{ type: "text", text: value }] };
 }
 
+// --- comment sidecars (same format the app uses) ---------------------------
+
+function sidecarFor(absPath) {
+  return path.join(path.dirname(absPath), `.${path.basename(absPath)}.comments.json`);
+}
+
+async function readThreads(absPath) {
+  try {
+    const parsed = JSON.parse(await fs.readFile(sidecarFor(absPath), "utf8"));
+    return Array.isArray(parsed.threads) ? parsed.threads : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeThreads(absPath, threads) {
+  const sc = sidecarFor(absPath);
+  if (threads.length === 0) {
+    await fs.rm(sc, { force: true });
+    return;
+  }
+  await fs.writeFile(sc, JSON.stringify({ version: 1, threads }, null, 2), "utf8");
+}
+
+function newId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function renderThread(t) {
+  const status = t.resolved ? "resolved" : "open";
+  const quote = t.quote.length > 120 ? t.quote.slice(0, 120) + "…" : t.quote;
+  const msgs = t.comments
+    .map((m) => `    [${m.author ?? "User"}] ${m.text.replaceAll("\n", "\n    ")}`)
+    .join("\n");
+  return `- ${t.id} (${status})\n  quote: "${quote}"\n${msgs}`;
+}
+
 const server = new McpServer({ name: "inky", version: "0.1.0" });
 
 server.registerTool(
@@ -200,6 +237,116 @@ server.registerTool(
   },
 );
 
+server.registerTool(
+  "list_comments",
+  {
+    title: "List a document's comment threads",
+    description:
+      "List the comment threads on an Inky document (the user's questions and notes, Google-Docs style). Each thread has an id, a quoted text anchor, open/resolved status, and messages. Threads marked open usually need an answer.",
+    inputSchema: {
+      path: z.string().describe("Library-relative document path"),
+      filter: z.enum(["all", "open", "resolved"]).optional().describe("Default: all"),
+    },
+  },
+  async ({ path: relPath, filter }) => {
+    const { resolved } = await resolveInLibrary(relPath);
+    let threads = await readThreads(resolved);
+    if (filter === "open") threads = threads.filter((t) => !t.resolved);
+    if (filter === "resolved") threads = threads.filter((t) => t.resolved);
+    if (threads.length === 0) return text(`No ${filter ?? ""} comments on ${relPath}`.replace("  ", " "));
+    return text(threads.map(renderThread).join("\n\n"));
+  },
+);
+
+server.registerTool(
+  "create_comment",
+  {
+    title: "Comment on a document",
+    description:
+      "Start a new comment thread on an Inky document, anchored to an exact quote from the document's text. The quote must appear verbatim in the document. Use this to leave feedback, questions, or suggestions the user will see highlighted in Inky.",
+    inputSchema: {
+      path: z.string().describe("Library-relative document path"),
+      quote: z.string().describe("Exact text from the document to anchor the comment to"),
+      text: z.string().describe("The comment"),
+      author: z.string().optional().describe("Author label shown in Inky (default: Claude)"),
+    },
+  },
+  async ({ path: relPath, quote, text: body, author }) => {
+    const { resolved } = await resolveInLibrary(relPath);
+    const doc = await fs.readFile(resolved, "utf8");
+    const idx = doc.indexOf(quote);
+    if (idx === -1) {
+      throw new Error("Quote not found in the document — it must match the text exactly.");
+    }
+    const threads = await readThreads(resolved);
+    const now = new Date().toISOString();
+    const thread = {
+      id: newId("thread"),
+      quote,
+      prefix: doc.slice(Math.max(0, idx - 30), idx),
+      suffix: doc.slice(idx + quote.length, idx + quote.length + 30),
+      resolved: false,
+      createdAt: now,
+      comments: [{ id: newId("msg"), text: body, createdAt: now, author: author ?? "Claude" }],
+    };
+    threads.push(thread);
+    await writeThreads(resolved, threads);
+    return text(`Created ${thread.id} on ${relPath}`);
+  },
+);
+
+server.registerTool(
+  "reply_to_comment",
+  {
+    title: "Reply to a comment thread",
+    description:
+      "Add a reply to an existing comment thread on an Inky document. Use list_comments first to get thread ids. The user sees replies in Inky's comments panel.",
+    inputSchema: {
+      path: z.string().describe("Library-relative document path"),
+      thread_id: z.string().describe("Thread id from list_comments"),
+      text: z.string().describe("The reply"),
+      author: z.string().optional().describe("Author label shown in Inky (default: Claude)"),
+    },
+  },
+  async ({ path: relPath, thread_id, text: body, author }) => {
+    const { resolved } = await resolveInLibrary(relPath);
+    const threads = await readThreads(resolved);
+    const thread = threads.find((t) => t.id === thread_id);
+    if (!thread) throw new Error(`No thread ${thread_id} on ${relPath}`);
+    thread.comments.push({
+      id: newId("msg"),
+      text: body,
+      createdAt: new Date().toISOString(),
+      author: author ?? "Claude",
+    });
+    await writeThreads(resolved, threads);
+    return text(`Replied to ${thread_id}`);
+  },
+);
+
+server.registerTool(
+  "resolve_comment",
+  {
+    title: "Resolve or reopen a comment thread",
+    description:
+      "Mark a comment thread on an Inky document as resolved (or reopen it). Only resolve a thread after actually addressing it — e.g. after replying or updating the document.",
+    inputSchema: {
+      path: z.string().describe("Library-relative document path"),
+      thread_id: z.string().describe("Thread id from list_comments"),
+      resolved: z.boolean().optional().describe("Default true; false reopens"),
+    },
+  },
+  async ({ path: relPath, thread_id, resolved: flag }) => {
+    const { resolved: abs } = await resolveInLibrary(relPath);
+    const threads = await readThreads(abs);
+    const thread = threads.find((t) => t.id === thread_id);
+    if (!thread) throw new Error(`No thread ${thread_id} on ${relPath}`);
+    thread.resolved = flag ?? true;
+    await writeThreads(abs, threads);
+    return text(`${thread.resolved ? "Resolved" : "Reopened"} ${thread_id}`);
+  },
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
 
@@ -208,7 +355,8 @@ const root = await libraryRoot();
 console.error(`Inky MCP server running on stdio
   Library: ${root}
   Tools:   list_documents, read_document, write_document, create_folder,
-           delete_document, search_documents
+           delete_document, search_documents, list_comments, create_comment,
+           reply_to_comment, resolve_comment
 
 This process is meant to be launched by an MCP client (it waits for JSON-RPC
 on stdin — that's why nothing else appears here). Register it with:

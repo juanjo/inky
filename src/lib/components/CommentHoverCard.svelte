@@ -22,6 +22,9 @@
   <div class="flex flex-col gap-2">
     {#each shown as msg, i (msg.id)}
       <div class={i > 0 ? "border-l-2 border-border pl-2" : ""}>
+        {#if msg.author}
+          <span class="text-[10px] font-semibold">{msg.author}: </span>
+        {/if}
         <p class="line-clamp-3 text-xs leading-snug whitespace-pre-wrap">{msg.text}</p>
         <p class="mt-0.5 text-[10px] text-muted-foreground">{relativeTime(msg.createdAt)}</p>
       </div>

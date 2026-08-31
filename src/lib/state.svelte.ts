@@ -458,6 +458,22 @@ class AppState {
         // File disappeared from disk; keep the buffer so the user can re-save.
       }
     }
+    // Pick up comment threads written by agents via the MCP server.
+    await this.reloadCommentsFromDisk();
+  }
+
+  /** Refresh threads from the sidecar without touching draft/selection state. */
+  async reloadCommentsFromDisk() {
+    if (!this.currentPath) return;
+    try {
+      const raw = await invoke<string>("read_comments", { docPath: this.currentPath });
+      const threads = raw ? (JSON.parse(raw).threads ?? []) : [];
+      if (JSON.stringify(threads) !== JSON.stringify(this.commentThreads)) {
+        this.commentThreads = threads;
+      }
+    } catch {
+      // Unreadable sidecar; keep current state.
+    }
   }
 
   async openDoc(path: string, opts: { silent?: boolean } = {}) {

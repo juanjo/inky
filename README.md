@@ -137,7 +137,9 @@ you can't ship updates to existing installs.
 
 `mcp/server.mjs` is a stdio MCP server exposing the Inky library to agents:
 `list_documents`, `read_document`, `write_document`, `create_folder`,
-`delete_document`, `search_documents`. It resolves the library folder from
+`delete_document`, `search_documents` — plus comment tools (`list_comments`,
+`create_comment`, `reply_to_comment`, `resolve_comment`) so agents can answer
+and resolve the comment threads you leave on documents. It resolves the library folder from
 `INKY_LIBRARY`, then the app's own config
 (`~/Library/Application Support/com.inky.app/config.json`), then
 `~/Documents/Inky` — so the app and agents always see the same documents.

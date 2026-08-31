@@ -9,6 +9,8 @@ export interface CommentMsg {
   id: string;
   text: string;
   createdAt: string;
+  /** Set for messages written by agents via the MCP server; absent for the user's own. */
+  author?: string;
 }
 
 export interface CommentThread {

@@ -216,6 +216,13 @@
           <div class="flex flex-col gap-2">
             {#each thread.comments as msg, i (msg.id)}
               <div class={i > 0 ? "border-l-2 border-border pl-2" : ""}>
+                {#if msg.author}
+                  <span
+                    class="mb-0.5 inline-block rounded bg-foreground/10 px-1 py-px text-[10px] font-semibold"
+                  >
+                    {msg.author}
+                  </span>
+                {/if}
                 <p class="text-sm leading-snug whitespace-pre-wrap select-text">{msg.text}</p>
                 <p class="mt-0.5 text-[11px] text-muted-foreground">{relativeTime(msg.createdAt)}</p>
               </div>
