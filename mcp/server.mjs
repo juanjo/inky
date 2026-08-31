@@ -202,3 +202,17 @@ server.registerTool(
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
+// Status goes to stderr — stdout carries the MCP JSON-RPC protocol.
+const root = await libraryRoot();
+console.error(`Inky MCP server running on stdio
+  Library: ${root}
+  Tools:   list_documents, read_document, write_document, create_folder,
+           delete_document, search_documents
+
+This process is meant to be launched by an MCP client (it waits for JSON-RPC
+on stdin — that's why nothing else appears here). Register it with:
+
+  claude mcp add --scope user inky -- node ${path.join(import.meta.dirname, "server.mjs")}
+
+Press Ctrl+C to stop.`);
