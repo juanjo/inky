@@ -177,11 +177,16 @@ fn build_tree(dir: &Path) -> Vec<Node> {
             continue;
         }
         if path.is_dir() {
+            let children = build_tree(&path);
+            // Image-attachment folders with no documents inside are noise.
+            if name.eq_ignore_ascii_case("assets") && children.is_empty() {
+                continue;
+            }
             nodes.push(Node {
                 name,
                 path: path.to_string_lossy().into_owned(),
                 is_dir: true,
-                children: build_tree(&path),
+                children,
             });
         } else if is_doc(&path) {
             nodes.push(Node {
