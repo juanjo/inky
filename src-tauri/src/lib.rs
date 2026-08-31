@@ -507,6 +507,36 @@ fn quit_app(app: tauri::AppHandle) {
 
 // --- app-hosted MCP server (node subprocess in HTTP mode) -------------------
 
+/// GUI apps on macOS get a minimal PATH (no /usr/local/bin, homebrew, nvm…),
+/// so `node` must be resolved explicitly.
+fn find_node() -> Option<PathBuf> {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let candidate = Path::new(dir).join("node");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let home = Path::new(&home);
+    let mut candidates: Vec<PathBuf> = vec![
+        PathBuf::from("/opt/homebrew/bin/node"),
+        PathBuf::from("/usr/local/bin/node"),
+        home.join(".volta/bin/node"),
+        home.join(".asdf/shims/node"),
+    ];
+    // nvm: pick the newest installed version.
+    if let Ok(entries) = fs::read_dir(home.join(".nvm/versions/node")) {
+        let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        versions.sort();
+        if let Some(latest) = versions.last() {
+            candidates.push(latest.join("bin/node"));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 struct McpProc(std::sync::Mutex<Option<std::process::Child>>);
 
 fn kill_mcp(state: &McpProc) {
@@ -568,7 +598,11 @@ fn start_mcp(
     if !script.exists() {
         return Err(format!("MCP server script not found at {}", script.display()));
     }
-    let child = std::process::Command::new("node")
+    let node = find_node().ok_or_else(|| {
+        "Node.js not found — install it (e.g. `brew install node`) to run the MCP server"
+            .to_string()
+    })?;
+    let child = std::process::Command::new(node)
         .arg(&script)
         .arg("--http")
         .arg(port.to_string())
