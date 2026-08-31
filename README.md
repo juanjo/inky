@@ -75,12 +75,15 @@ Tauri 2, Svelte 5, Tailwind CSS 4 and shadcn-svelte.
   (see below).
 - **MCP server** — agents can read and write your library (see below). Start
   it from the toolbar's red/green **MCP** status light (no terminal needed).
-- **Safety** — unsaved changes are flushed on window blur, close, and ⌘Q;
-  every content-changing overwrite keeps the previous version in a hidden
-  `.inky-history/` folder next to the document (max one per 10 minutes, last
-  20 kept); edits that collide with on-disk changes warn instead of silently
-  losing either side. Single-instance guard and window-state restore
-  included.
+- **Safety & history** — unsaved changes are flushed on window blur, close,
+  and ⌘Q; every content-changing overwrite keeps the previous version in a
+  hidden `.inky-history/` folder next to the document (max one per 10
+  minutes, last 20 kept). *… → Version history* (or File → Version History…)
+  shows each snapshot with a colored diff against the current document and
+  one-click restore — restoring snapshots the replaced version too, so it's
+  always reversible. Edits that collide with on-disk changes warn instead of
+  silently losing either side. Single-instance guard and window-state
+  restore included.
 
 ## Development
 
@@ -147,7 +150,9 @@ you can't ship updates to existing installs.
 `list_documents`, `read_document`, `write_document`, `create_folder`,
 `delete_document`, `search_documents` — plus comment tools (`list_comments`,
 `create_comment`, `reply_to_comment`, `resolve_comment`) so agents can answer
-and resolve the comment threads you leave on documents. It resolves the library folder from
+and resolve the comment threads you leave on documents, and history tools
+(`list_versions`, `read_version`) so they can report what changed or recover
+earlier text. It resolves the library folder from
 `INKY_LIBRARY`, then the app's own config
 (`~/Library/Application Support/com.inky.app/config.json`), then
 `~/Documents/Inky` — so the app and agents always see the same documents.

@@ -62,6 +62,7 @@ class AppState {
   focusMode = $state(false);
   quickOpenVisible = $state(false);
   librarySearchVisible = $state(false);
+  historyVisible = $state(false);
   /** Query the in-document search bar should run once it opens. */
   pendingSearchQuery: string | null = null;
   /** URL of the app-hosted MCP server while it's running. */

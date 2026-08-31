@@ -379,6 +379,12 @@
         <DropdownMenu.Item disabled={!app.currentPath} onclick={() => app.printDoc()}>
           Print… <DropdownMenu.Shortcut>⌘P</DropdownMenu.Shortcut>
         </DropdownMenu.Item>
+        <DropdownMenu.Item
+          disabled={!app.currentPath}
+          onclick={() => (app.historyVisible = true)}
+        >
+          Version history…
+        </DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item onclick={() => app.refreshTree()}>Refresh library</DropdownMenu.Item>
         <DropdownMenu.Item onclick={revealLibrary}>Reveal library in Finder</DropdownMenu.Item>

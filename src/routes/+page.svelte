@@ -15,6 +15,7 @@
   import SearchBar from "$lib/components/SearchBar.svelte";
   import QuickOpen from "$lib/components/QuickOpen.svelte";
   import LibrarySearch from "$lib/components/LibrarySearch.svelte";
+  import HistoryPanel from "$lib/components/HistoryPanel.svelte";
   import * as Resizable from "$lib/components/ui/resizable/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import FilePlus from "@lucide/svelte/icons/file-plus-2";
@@ -40,6 +41,9 @@
       print: () => app.printDoc(),
       find: () => app.openSearch(),
       search_library: () => (app.librarySearchVisible = true),
+      history: () => {
+        if (app.currentPath) app.historyVisible = true;
+      },
       view_reading: () => app.setViewMode("preview"),
       view_split: () => app.setViewMode("split"),
       view_writing: () => app.setViewMode("editor"),
@@ -285,3 +289,4 @@
 
 <QuickOpen />
 <LibrarySearch />
+<HistoryPanel />

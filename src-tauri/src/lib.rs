@@ -267,6 +267,70 @@ fn write_doc(app: tauri::AppHandle, path: String, content: String) -> Result<(),
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct VersionInfo {
+    name: String,
+    modified_ms: u64,
+    size: u64,
+}
+
+fn doc_parts(doc: &Path) -> Result<(&Path, &str, &str), String> {
+    let parent = doc.parent().ok_or("no parent")?;
+    let stem = doc
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("invalid name")?;
+    let ext = doc
+        .extension()
+        .and_then(|e| e.to_str())
+        .ok_or("invalid extension")?;
+    Ok((parent, stem, ext))
+}
+
+#[tauri::command]
+fn list_versions(app: tauri::AppHandle, path: String) -> Result<Vec<VersionInfo>, String> {
+    let doc = guard(&app, &path)?;
+    let (parent, stem, ext) = doc_parts(&doc)?;
+    let dir = parent.join(HISTORY_DIR);
+    let mut out: Vec<VersionInfo> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !(name.starts_with(&format!("{stem}.")) && name.ends_with(&format!(".{ext}"))) {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            let modified_ms = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            out.push(VersionInfo {
+                name,
+                modified_ms,
+                size: meta.len(),
+            });
+        }
+    }
+    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    Ok(out)
+}
+
+#[tauri::command]
+fn read_version(app: tauri::AppHandle, path: String, version: String) -> Result<String, String> {
+    let doc = guard(&app, &path)?;
+    let (parent, stem, ext) = doc_parts(&doc)?;
+    if version.contains('/')
+        || !version.starts_with(&format!("{stem}."))
+        || !version.ends_with(&format!(".{ext}"))
+    {
+        return Err("invalid version name".into());
+    }
+    fs::read_to_string(parent.join(HISTORY_DIR).join(version)).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SearchHit {
     path: String,
     name: String,
@@ -759,6 +823,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
                 .accelerator("CmdOrCtrl+S")
                 .build(handle)?,
         )
+        .item(&MenuItemBuilder::with_id("history", "Version History…").build(handle)?)
         .separator()
         .item(
             &MenuItemBuilder::with_id("export_pdf", "Export as PDF…")
@@ -924,6 +989,8 @@ pub fn run() {
             read_comments,
             write_comments,
             search_library,
+            list_versions,
+            read_version,
             doc_mtime,
             quit_app,
             start_mcp,

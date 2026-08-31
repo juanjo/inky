@@ -92,6 +92,18 @@ describe("inky MCP server", () => {
     expect(r.result.content[0].text).toBe("alpha BETA alpha\n");
   });
 
+  it("keeps and serves version history", async () => {
+    await callTool("write_document", { path: "h.md", content: "first version\n" });
+    await callTool("write_document", { path: "h.md", content: "second version\n" });
+    const list = await callTool("list_versions", { path: "h.md" });
+    const name = list.result.content[0].text.match(/h\.[\w.-]+\.md/)?.[0];
+    expect(name).toBeTruthy();
+    const old = await callTool("read_version", { path: "h.md", version: name });
+    expect(old.result.content[0].text).toBe("first version\n");
+    const bad = await callTool("read_version", { path: "h.md", version: "../h.md" });
+    expect(bad.result?.isError ?? !!bad.error).toBe(true);
+  });
+
   it("round-trips comments", async () => {
     await callTool("write_document", { path: "c.md", content: "hello brave world\n" });
     const created = await callTool("create_comment", {
