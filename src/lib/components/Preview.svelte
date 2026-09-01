@@ -232,12 +232,11 @@
   let richWrapper: HTMLDivElement | null = null;
   let richOriginalHtml = "";
   let richBlock: SourceBlock | null = null;
+  let richInsert = false;
+  let richSeps = { lead: "", tail: "" };
   let richBar = $state<{ x: number; y: number } | null>(null);
 
-  function startRichBlockEdit(el: HTMLElement, block: SourceBlock, e: MouseEvent) {
-    blockEditing = true;
-    richBlock = block;
-    richOriginalHtml = el.outerHTML;
+  function mountRichWrapper(el: HTMLElement): HTMLDivElement {
     const wrapper = document.createElement("div");
     wrapper.className = "rich-edit";
     wrapper.contentEditable = "true";
@@ -268,6 +267,16 @@
     wrapper.addEventListener("focusout", (ev) => {
       if (!wrapper.contains(ev.relatedTarget as Node | null)) finishRichEdit(true);
     });
+    return wrapper;
+  }
+
+  function startRichBlockEdit(el: HTMLElement, block: SourceBlock, e: MouseEvent) {
+    blockEditing = true;
+    richBlock = block;
+    richInsert = false;
+    richSeps = { lead: "", tail: "" };
+    richOriginalHtml = el.outerHTML;
+    const wrapper = mountRichWrapper(el);
 
     const { clientX, clientY } = e;
     requestAnimationFrame(() => {
@@ -285,19 +294,84 @@
     });
   }
 
+  /** Clicking the gap between blocks starts a fresh paragraph there. */
+  function maybeStartGapEdit(e: MouseEvent): boolean {
+    if (app.viewMode !== "preview" || blockEditing || !container || app.isMermaidDoc) return false;
+    const target = e.target as HTMLElement;
+    if (target !== container && target !== scroller) return false;
+    if (!window.getSelection()?.isCollapsed) return false;
+    const crect = container.getBoundingClientRect();
+    if (e.clientX < crect.left - 16 || e.clientX > crect.right + 16) return false;
+    const children = [...container.children] as HTMLElement[];
+    if (children.length === 0) return false;
+    let next: HTMLElement | null = null;
+    for (const child of children) {
+      const r = child.getBoundingClientRect();
+      if (r.top + r.height / 2 > e.clientY) {
+        next = child;
+        break;
+      }
+    }
+    const prev = next ? (next.previousElementSibling as HTMLElement | null) : children.at(-1)!;
+    const prevBlock = prev ? blockMap.get(prev) : undefined;
+    const nextBlock = next ? blockMap.get(next) : undefined;
+    let pos: number;
+    if (prev && prevBlock) {
+      pos = prevBlock.end;
+      richSeps = { lead: "\n\n", tail: "" };
+    } else if (next && nextBlock) {
+      pos = nextBlock.start;
+      richSeps = { lead: "", tail: "\n\n" };
+    } else {
+      return false;
+    }
+
+    blockEditing = true;
+    richBlock = { start: pos, end: pos };
+    richInsert = true;
+    richOriginalHtml = "";
+    const p = document.createElement("p");
+    p.innerHTML = "<br>";
+    if (next) next.before(p);
+    else container.appendChild(p);
+    const wrapper = mountRichWrapper(p);
+    requestAnimationFrame(() => {
+      wrapper.focus();
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.setStart(p, 0);
+      range.collapse(true);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+    return true;
+  }
+
   function finishRichEdit(commit: boolean) {
     const wrapper = richWrapper;
     const block = richBlock;
     if (!wrapper || !block) return;
+    const isInsert = richInsert;
+    const { lead, tail } = richSeps;
     richWrapper = null;
     richBlock = null;
+    richInsert = false;
+    richSeps = { lead: "", tail: "" };
     richBar = null;
     blockEditing = false;
     const html = wrapper.innerHTML;
-    wrapper.outerHTML = richOriginalHtml;
+    if (isInsert) wrapper.remove();
+    else wrapper.outerHTML = richOriginalHtml;
     if (!commit) return;
-    const original = app.content.slice(block.start, block.end);
     const md = htmlToMarkdown(html).trim();
+    if (isInsert) {
+      if (!md) return;
+      blockMap = new WeakMap();
+      app.content = app.content.slice(0, block.start) + lead + md + tail + app.content.slice(block.end);
+      app.scheduleAutosave();
+      return;
+    }
+    const original = app.content.slice(block.start, block.end);
     if (md && md !== original.trim()) {
       // Offsets of later blocks just shifted; drop the map until re-render.
       blockMap = new WeakMap();
@@ -561,7 +635,8 @@
       handleLink(anchor.getAttribute("href") ?? "");
       return;
     }
-    maybeStartBlockEdit(event);
+    if (maybeStartBlockEdit(event)) return;
+    maybeStartGapEdit(event);
   }
 
   function handleLink(href: string) {
@@ -608,7 +683,7 @@
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_mouse_events_have_key_events -->
 <div
   bind:this={scroller}
-  class="print-scroll relative h-full overflow-y-auto px-8 py-10"
+  class="print-scroll relative h-full cursor-text overflow-y-auto px-8 py-10"
   onclick={handleClick}
   onscroll={onScroll}
   onmouseup={onMouseUp}
