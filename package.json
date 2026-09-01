@@ -12,7 +12,7 @@
     "tauri": "tauri",
     "mcp": "node mcp/server.mjs",
     "bundle": "TAURI_SIGNING_PRIVATE_KEY=$HOME/.tauri/inky.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD=\"\" tauri build",
-    "mcp:bundle": "esbuild mcp/server.mjs --bundle --platform=node --format=esm --outfile=mcp/server.bundle.mjs --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "mcp:bundle": "esbuild mcp/server.mjs --bundle --platform=node --format=esm --minify --outfile=mcp/server.bundle.mjs --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
     "test": "vitest run"
   },
   "license": "MIT",

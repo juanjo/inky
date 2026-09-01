@@ -2,9 +2,8 @@ import { Marked } from "marked";
 import { markedHighlight } from "marked-highlight";
 import markedKatex from "marked-katex-extension";
 import markedFootnote from "marked-footnote";
-import hljs from "highlight.js";
+import hljs from "highlight.js/lib/common";
 import DOMPurify from "dompurify";
-import mermaid from "mermaid";
 import type { ThemeName } from "./types";
 
 const marked = new Marked(
@@ -197,8 +196,15 @@ export function renderMarkdown(src: string): string {
 
 let mermaidTheme: string | null = null;
 let renderCounter = 0;
+// Mermaid is ~2MB; load it only when a document actually contains a diagram.
+type Mermaid = typeof import("mermaid")["default"];
+let mermaidPromise: Promise<Mermaid> | null = null;
 
-function configureMermaid(theme: ThemeName) {
+function loadMermaid(): Promise<Mermaid> {
+  return (mermaidPromise ??= import("mermaid").then((m) => m.default));
+}
+
+function configureMermaid(mermaid: Mermaid, theme: ThemeName) {
   const mTheme = theme === "dark" ? "dark" : theme === "book" ? "neutral" : "default";
   if (mermaidTheme === mTheme) return;
   mermaidTheme = mTheme;
@@ -212,8 +218,10 @@ function configureMermaid(theme: ThemeName) {
 
 /** Render every mermaid placeholder inside `container` into inline SVG. */
 export async function renderMermaidBlocks(container: HTMLElement, theme: ThemeName) {
-  configureMermaid(theme);
   const blocks = container.querySelectorAll<HTMLElement>(".mermaid-block[data-mermaid]");
+  if (blocks.length === 0) return;
+  const mermaid = await loadMermaid();
+  configureMermaid(mermaid, theme);
   for (const block of blocks) {
     const src = decodeURIComponent(block.dataset.mermaid ?? "");
     try {

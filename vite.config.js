@@ -8,6 +8,12 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [tailwindcss(), sveltekit()],
 
+  // Desktop app: bundle size matters less than the warning noise. Mermaid is
+  // code-split (lazy); KaTeX + CodeMirror legitimately exceed 500 kB.
+  build: {
+    chunkSizeWarningLimit: 1100,
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
