@@ -1,25 +1,10 @@
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 pub mod library;
 
-#[derive(Serialize, Deserialize, Default)]
-struct Config {
-    library: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Node {
-    name: String,
-    path: String,
-    is_dir: bool,
-    children: Vec<Node>,
-}
-
-const DOC_EXTENSIONS: [&str; 3] = ["md", "markdown", "mmd"];
+use library::{Config, Library, Node, SearchHit, VersionInfo};
 
 fn config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -41,352 +26,71 @@ fn write_config(app: &tauri::AppHandle, config: &Config) -> Result<(), String> {
     fs::write(path, json).map_err(|e| e.to_string())
 }
 
-fn resolve_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+/// The app's library: configured folder or `~/Documents/Inky`, persisted so
+/// stdio-mode MCP (`Library::from_env`) sees the same choice.
+fn open_library(app: &tauri::AppHandle) -> Result<Library, String> {
     let config = read_config(app);
     let root = match config.library {
         Some(ref p) if !p.is_empty() => PathBuf::from(p),
-        _ => {
-            let docs = app
-                .path()
-                .document_dir()
-                .or_else(|_| app.path().home_dir())
-                .map_err(|e| e.to_string())?;
-            docs.join("Inky")
-        }
+        _ => app
+            .path()
+            .document_dir()
+            .or_else(|_| app.path().home_dir())
+            .map_err(|e| e.to_string())?
+            .join("Inky"),
     };
-    fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    if config.library.as_deref() != Some(root.to_string_lossy().as_ref()) {
-        let _ = write_config(
-            app,
-            &Config {
-                library: Some(root.to_string_lossy().into_owned()),
-            },
-        );
+    let lib = Library::open(&root)?;
+    let stored = root.to_string_lossy().into_owned();
+    if config.library.as_deref() != Some(stored.as_str()) {
+        let _ = write_config(app, &Config { library: Some(stored) });
     }
-    Ok(root)
+    Ok(lib)
 }
 
-/// Reject paths that escape the library root.
-fn guard(app: &tauri::AppHandle, path: &str) -> Result<PathBuf, String> {
-    let root = resolve_root(app)?;
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let candidate = PathBuf::from(path);
-    // Canonicalize the deepest existing ancestor so new files are checked too.
-    let mut existing = candidate.clone();
-    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
-    while !existing.exists() {
-        match existing.file_name() {
-            Some(name) => suffix.push(name.to_os_string()),
-            None => return Err("invalid path".into()),
-        }
-        existing = existing
-            .parent()
-            .ok_or_else(|| "invalid path".to_string())?
-            .to_path_buf();
-    }
-    let mut resolved = existing.canonicalize().map_err(|e| e.to_string())?;
-    for part in suffix.iter().rev() {
-        resolved.push(part);
-    }
-    if resolved.starts_with(&root) {
-        Ok(resolved)
-    } else {
-        Err("path is outside the Inky library".into())
-    }
-}
-
-const HISTORY_DIR: &str = ".inky-history";
-const SNAPSHOT_MIN_INTERVAL_SECS: u64 = 10 * 60;
-const SNAPSHOT_KEEP: usize = 20;
-
-/// Before overwriting a document, keep the old version in a hidden history
-/// folder next to it — at most one snapshot per 10 minutes, last 20 kept.
-fn snapshot(doc: &Path) {
-    let Ok(old) = fs::read_to_string(doc) else {
-        return;
-    };
-    let (Some(parent), Some(stem), Some(ext)) = (
-        doc.parent(),
-        doc.file_stem().and_then(|s| s.to_str()),
-        doc.extension().and_then(|e| e.to_str()),
-    ) else {
-        return;
-    };
-    let dir = parent.join(HISTORY_DIR);
-    if fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let mut mine: Vec<PathBuf> = fs::read_dir(&dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.starts_with(&format!("{stem}.")) && n.ends_with(&format!(".{ext}")))
-                        .unwrap_or(false)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    mine.sort();
-    if let Some(last) = mine.last() {
-        if let Ok(meta) = fs::metadata(last) {
-            if let Ok(modified) = meta.modified() {
-                if modified.elapsed().map(|e| e.as_secs()).unwrap_or(u64::MAX)
-                    < SNAPSHOT_MIN_INTERVAL_SECS
-                {
-                    return;
-                }
-            }
-        }
-    }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let _ = fs::write(dir.join(format!("{stem}.{ts}.{ext}")), old);
-    if mine.len() >= SNAPSHOT_KEEP {
-        for stale in &mine[..mine.len() + 1 - SNAPSHOT_KEEP] {
-            let _ = fs::remove_file(stale);
-        }
-    }
-}
-
-/// Hidden sidecar file holding a document's comment threads.
-fn sidecar_for(doc: &Path) -> Option<PathBuf> {
-    let name = doc.file_name()?.to_str()?;
-    Some(doc.parent()?.join(format!(".{name}.comments.json")))
-}
-
-fn is_doc(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| DOC_EXTENSIONS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
-fn build_tree(dir: &Path) -> Vec<Node> {
-    let mut nodes: Vec<Node> = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return nodes;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
-            continue;
-        }
-        if path.is_dir() {
-            let children = build_tree(&path);
-            // Image-attachment folders with no documents inside are noise.
-            if name.eq_ignore_ascii_case("assets") && children.is_empty() {
-                continue;
-            }
-            nodes.push(Node {
-                name,
-                path: path.to_string_lossy().into_owned(),
-                is_dir: true,
-                children,
-            });
-        } else if is_doc(&path) {
-            nodes.push(Node {
-                name,
-                path: path.to_string_lossy().into_owned(),
-                is_dir: false,
-                children: Vec::new(),
-            });
-        }
-    }
-    nodes.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-    nodes
-}
-
-/// Pick "name.md", "name 2.md", ... — first one that doesn't exist yet.
-fn unique_path(dir: &Path, stem: &str, ext: Option<&str>) -> PathBuf {
-    for i in 1u32.. {
-        let candidate = if i == 1 {
-            stem.to_string()
-        } else {
-            format!("{stem} {i}")
-        };
-        let full = match ext {
-            Some(e) => dir.join(format!("{candidate}.{e}")),
-            None => dir.join(candidate),
-        };
-        if !full.exists() {
-            return full;
-        }
-    }
-    unreachable!()
+fn to_string(p: PathBuf) -> String {
+    p.to_string_lossy().into_owned()
 }
 
 #[tauri::command]
 fn library_root(app: tauri::AppHandle) -> Result<String, String> {
-    Ok(resolve_root(&app)?.to_string_lossy().into_owned())
+    Ok(open_library(&app)?.root().to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 fn set_library_root(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    let p = PathBuf::from(&path);
-    if !p.is_dir() {
-        return Err("not a directory".into());
-    }
-    write_config(
-        &app,
-        &Config {
-            library: Some(path.clone()),
-        },
-    )?;
+    Library::open(&path)?;
+    write_config(&app, &Config { library: Some(path.clone()) })?;
     Ok(path)
 }
 
 #[tauri::command]
 fn list_tree(app: tauri::AppHandle) -> Result<Vec<Node>, String> {
-    let root = resolve_root(&app)?;
-    Ok(build_tree(&root))
+    Ok(open_library(&app)?.tree())
 }
 
 #[tauri::command]
 fn read_doc(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    let p = guard(&app, &path)?;
-    fs::read_to_string(p).map_err(|e| e.to_string())
+    open_library(&app)?.read(&path)
 }
 
 #[tauri::command]
 fn write_doc(app: tauri::AppHandle, path: String, content: String) -> Result<(), String> {
-    let p = guard(&app, &path)?;
-    if fs::read_to_string(&p).map(|old| old != content).unwrap_or(false) {
-        snapshot(&p);
-    }
-    fs::write(p, content).map_err(|e| e.to_string())
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VersionInfo {
-    name: String,
-    modified_ms: u64,
-    size: u64,
-}
-
-fn doc_parts(doc: &Path) -> Result<(&Path, &str, &str), String> {
-    let parent = doc.parent().ok_or("no parent")?;
-    let stem = doc
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or("invalid name")?;
-    let ext = doc
-        .extension()
-        .and_then(|e| e.to_str())
-        .ok_or("invalid extension")?;
-    Ok((parent, stem, ext))
+    open_library(&app)?.write(&path, &content)
 }
 
 #[tauri::command]
 fn list_versions(app: tauri::AppHandle, path: String) -> Result<Vec<VersionInfo>, String> {
-    let doc = guard(&app, &path)?;
-    let (parent, stem, ext) = doc_parts(&doc)?;
-    let dir = parent.join(HISTORY_DIR);
-    let mut out: Vec<VersionInfo> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !(name.starts_with(&format!("{stem}.")) && name.ends_with(&format!(".{ext}"))) {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            let modified_ms = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            out.push(VersionInfo {
-                name,
-                modified_ms,
-                size: meta.len(),
-            });
-        }
-    }
-    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
-    Ok(out)
+    open_library(&app)?.list_versions(&path)
 }
 
 #[tauri::command]
 fn read_version(app: tauri::AppHandle, path: String, version: String) -> Result<String, String> {
-    let doc = guard(&app, &path)?;
-    let (parent, stem, ext) = doc_parts(&doc)?;
-    if version.contains('/')
-        || !version.starts_with(&format!("{stem}."))
-        || !version.ends_with(&format!(".{ext}"))
-    {
-        return Err("invalid version name".into());
-    }
-    fs::read_to_string(parent.join(HISTORY_DIR).join(version)).map_err(|e| e.to_string())
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchHit {
-    path: String,
-    name: String,
-    line: u32,
-    text: String,
+    open_library(&app)?.read_version(&path, &version)
 }
 
 #[tauri::command]
 fn search_library(app: tauri::AppHandle, query: String) -> Result<Vec<SearchHit>, String> {
-    let root = resolve_root(&app)?;
-    let needle = query.to_lowercase();
-    if needle.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                let name = entry.file_name();
-                if name.to_string_lossy().starts_with('.') {
-                    continue;
-                }
-                if p.is_dir() {
-                    collect_files(&p, out);
-                } else if is_doc(&p) {
-                    out.push(p);
-                }
-            }
-        }
-    }
-    let mut files = Vec::new();
-    collect_files(&root, &mut files);
-    files.sort();
-    let mut hits = Vec::new();
-    'outer: for file in files {
-        let Ok(content) = fs::read_to_string(&file) else {
-            continue;
-        };
-        let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        for (i, line) in content.lines().enumerate() {
-            if line.to_lowercase().contains(&needle) {
-                hits.push(SearchHit {
-                    path: file.to_string_lossy().into_owned(),
-                    name: name.clone(),
-                    line: (i + 1) as u32,
-                    text: line.trim().chars().take(200).collect(),
-                });
-                if hits.len() >= 300 {
-                    break 'outer;
-                }
-            }
-        }
-    }
-    Ok(hits)
+    Ok(open_library(&app)?.search(&query))
 }
 
 #[tauri::command]
@@ -397,126 +101,38 @@ fn create_doc(
     ext: String,
     content: String,
 ) -> Result<String, String> {
-    let d = guard(&app, &dir)?;
-    if !d.is_dir() {
-        return Err("not a directory".into());
-    }
-    if !DOC_EXTENSIONS.contains(&ext.as_str()) {
-        return Err("unsupported extension".into());
-    }
-    let stem = name.trim().trim_end_matches(&format!(".{ext}")).to_string();
-    let stem = if stem.is_empty() { "Untitled".into() } else { stem };
-    let path = unique_path(&d, &stem, Some(&ext));
-    fs::write(&path, content).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
+    open_library(&app)?.create_doc_unique(&dir, &name, &ext, &content).map(to_string)
 }
 
 #[tauri::command]
 fn create_folder(app: tauri::AppHandle, dir: String, name: String) -> Result<String, String> {
-    let d = guard(&app, &dir)?;
-    let name = name.trim();
-    if name.is_empty() {
-        return Err("empty name".into());
-    }
-    let path = unique_path(&d, name, None);
-    fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
+    open_library(&app)?.create_folder_unique(&dir, &name).map(to_string)
 }
 
 #[tauri::command]
 fn rename_path(app: tauri::AppHandle, path: String, new_name: String) -> Result<String, String> {
-    let p = guard(&app, &path)?;
-    let new_name = new_name.trim();
-    if new_name.is_empty() || new_name.contains('/') {
-        return Err("invalid name".into());
-    }
-    let parent = p.parent().ok_or("no parent")?;
-    let mut target = parent.join(new_name);
-    if p.is_file() && !is_doc(&target) {
-        target = parent.join(format!("{new_name}.md"));
-    }
-    if target.exists() {
-        return Err("a file with that name already exists".into());
-    }
-    fs::rename(&p, &target).map_err(|e| e.to_string())?;
-    // Keep the comments sidecar attached to the document.
-    if let (Some(old_sc), Some(new_sc)) = (sidecar_for(&p), sidecar_for(&target)) {
-        if old_sc.exists() {
-            let _ = fs::rename(old_sc, new_sc);
-        }
-    }
-    Ok(target.to_string_lossy().into_owned())
+    open_library(&app)?.rename(&path, &new_name).map(to_string)
 }
 
 #[tauri::command]
 fn read_comments(app: tauri::AppHandle, doc_path: String) -> Result<String, String> {
-    let doc = guard(&app, &doc_path)?;
-    let Some(sc) = sidecar_for(&doc) else {
-        return Ok(String::new());
-    };
-    match fs::read_to_string(sc) {
-        Ok(s) => Ok(s),
-        Err(_) => Ok(String::new()),
-    }
+    open_library(&app)?.raw_comments(&doc_path)
 }
 
 #[tauri::command]
 fn write_comments(app: tauri::AppHandle, doc_path: String, json: String) -> Result<(), String> {
-    let doc = guard(&app, &doc_path)?;
-    let sc = sidecar_for(&doc).ok_or("invalid document path")?;
-    if json.is_empty() {
-        if sc.exists() {
-            fs::remove_file(sc).map_err(|e| e.to_string())?;
-        }
-        return Ok(());
-    }
-    fs::write(sc, json).map_err(|e| e.to_string())
+    open_library(&app)?.write_raw_comments(&doc_path, &json)
 }
 
 #[tauri::command]
 fn delete_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let p = guard(&app, &path)?;
-    trash::delete(&p).map_err(|e| e.to_string())?;
-    if let Some(sc) = sidecar_for(&p) {
-        if sc.exists() {
-            let _ = trash::delete(&sc);
-        }
-    }
-    Ok(())
+    open_library(&app)?.delete(&path)
 }
 
 /// Move a file or folder into another folder inside the library.
 #[tauri::command]
 fn move_path(app: tauri::AppHandle, path: String, target_dir: String) -> Result<String, String> {
-    let src = guard(&app, &path)?;
-    let dst_dir = guard(&app, &target_dir)?;
-    if !dst_dir.is_dir() {
-        return Err("target is not a folder".into());
-    }
-    if dst_dir == src || dst_dir.starts_with(&src) {
-        return Err("cannot move a folder into itself".into());
-    }
-    let name = src.file_name().ok_or("invalid source")?;
-    if src.parent() == Some(dst_dir.as_path()) {
-        return Ok(src.to_string_lossy().into_owned());
-    }
-    let mut target = dst_dir.join(name);
-    if target.exists() {
-        let stem = src
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Untitled")
-            .to_string();
-        let ext = src.extension().and_then(|e| e.to_str()).map(str::to_string);
-        target = unique_path(&dst_dir, &stem, ext.as_deref());
-    }
-    fs::rename(&src, &target).map_err(|e| e.to_string())?;
-    if let (Some(old_sc), Some(new_sc)) = (sidecar_for(&src), sidecar_for(&target)) {
-        if old_sc.exists() {
-            let _ = fs::rename(old_sc, new_sc);
-        }
-    }
-    Ok(target.to_string_lossy().into_owned())
+    open_library(&app)?.move_into(&path, &target_dir).map(to_string)
 }
 
 #[tauri::command]
@@ -537,7 +153,7 @@ fn save_image(
     if !["png", "jpg", "jpeg", "gif", "webp"].contains(&ext.as_str()) {
         return Err("unsupported image type".into());
     }
-    let doc = guard(&app, &doc_path)?;
+    let doc = open_library(&app)?.resolve(&doc_path)?;
     let dir = doc.parent().ok_or("no parent")?.join("assets");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -547,23 +163,15 @@ fn save_image(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_secs();
-    let path = unique_path(&dir, &format!("image-{stamp}"), Some(&ext));
+    let path = library::unique_path(&dir, &format!("image-{stamp}"), Some(&ext));
     fs::write(&path, bytes).map_err(|e| e.to_string())?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     Ok(format!("assets/{name}"))
 }
 
-/// Print the current page with proper page margins. With `save_path` the PDF is
-/// written silently; without it the native print panel opens.
 #[tauri::command]
 fn doc_mtime(app: tauri::AppHandle, path: String) -> Result<u64, String> {
-    let p = guard(&app, &path)?;
-    let meta = fs::metadata(p).map_err(|e| e.to_string())?;
-    meta.modified()
-        .map_err(|e| e.to_string())?
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .map_err(|e| e.to_string())
+    open_library(&app)?.mtime(&path)
 }
 
 #[tauri::command]
