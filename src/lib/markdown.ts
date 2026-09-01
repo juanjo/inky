@@ -173,9 +173,9 @@ marked.use({
     },
     listitem(item) {
       if (item.task) {
-        const checkbox = `<input type="checkbox" disabled ${item.checked ? "checked" : ""}>`;
+        // The checkbox itself is already among the item tokens.
         const body = this.parser.parse(item.tokens).replace(/^<p>|<\/p>\n?$/g, "");
-        return `<li class="task-item">${checkbox}${body}</li>\n`;
+        return `<li class="task-item">${body}</li>\n`;
       }
       return false;
     },

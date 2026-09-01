@@ -11,6 +11,17 @@
   } from "$lib/markdown";
   import { registerScroller } from "$lib/scrollsync";
   import { wrapQuote, unwrapMarks, contextAround } from "$lib/comments";
+  import { htmlToMarkdown } from "$lib/richedit";
+  import Bold from "@lucide/svelte/icons/bold";
+  import Italic from "@lucide/svelte/icons/italic";
+  import Strikethrough from "@lucide/svelte/icons/strikethrough";
+  import Code from "@lucide/svelte/icons/code";
+  import Heading1 from "@lucide/svelte/icons/heading-1";
+  import Heading2 from "@lucide/svelte/icons/heading-2";
+  import Heading3 from "@lucide/svelte/icons/heading-3";
+  import List from "@lucide/svelte/icons/list";
+  import ListOrdered from "@lucide/svelte/icons/list-ordered";
+  import TextQuote from "@lucide/svelte/icons/text-quote";
   import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
   import CommentHoverCard from "./CommentHoverCard.svelte";
 
@@ -54,6 +65,8 @@
       const src = img.getAttribute("src") ?? "";
       if (!src || /^(https?:|data:|blob:|asset:|\/\/)/.test(src)) continue;
       const abs = src.startsWith("/") ? src : `${dir}/${src.replace(/^\.\//, "")}`;
+      // Remember the markdown path so rich edits write it back unchanged.
+      img.dataset.mdSrc = src;
       img.src = convertFileSrc(abs);
     }
   }
@@ -183,52 +196,171 @@
     }
   }
 
-  /** A plain click on a mapped block swaps it for an inline markdown editor. */
+  /** A plain click on a mapped block starts editing it in place. */
   function maybeStartBlockEdit(e: MouseEvent): boolean {
     if (app.viewMode !== "preview" || blockEditing || !container) return false;
     const target = e.target as HTMLElement;
     // Leave links, comment highlights, form controls and diagrams alone.
-    if (target.closest("a, mark.comment-hl, input, textarea, svg, .mermaid-block")) return false;
+    if (target.closest("a, mark.comment-hl, input, textarea, svg, .mermaid-block, .rich-edit"))
+      return false;
     if (!window.getSelection()?.isCollapsed) return false;
     let el = target as HTMLElement | null;
     while (el && el.parentElement !== container) el = el.parentElement;
     if (!el) return false;
     const block = blockMap.get(el);
     if (!block) return false;
-    startBlockEdit(el, block, e);
+    // Blocks whose rendering can't round-trip through HTML→markdown (code
+    // fences, math, footnote refs) get the plain source editor instead.
+    if (el.tagName === "PRE" || el.querySelector(".katex, sup a")) {
+      startRawBlockEdit(el, block);
+    } else {
+      startRichBlockEdit(el, block, e);
+    }
     return true;
   }
 
-  function startBlockEdit(el: HTMLElement, block: SourceBlock, e: MouseEvent) {
+  // --- WYSIWYG path: the block stays rendered and becomes contentEditable ---
+  let richWrapper: HTMLDivElement | null = null;
+  let richOriginalHtml = "";
+  let richBlock: SourceBlock | null = null;
+  let richBar = $state<{ x: number; y: number } | null>(null);
+
+  function startRichBlockEdit(el: HTMLElement, block: SourceBlock, e: MouseEvent) {
+    blockEditing = true;
+    richBlock = block;
+    richOriginalHtml = el.outerHTML;
+    const wrapper = document.createElement("div");
+    wrapper.className = "rich-edit";
+    wrapper.contentEditable = "true";
+    wrapper.spellcheck = true;
+    el.replaceWith(wrapper);
+    wrapper.appendChild(el);
+    richWrapper = wrapper;
+
+    if (scroller) {
+      const rect = wrapper.getBoundingClientRect();
+      const srect = scroller.getBoundingClientRect();
+      richBar = {
+        x: Math.max(8, Math.min(rect.left - srect.left, srect.width - 340)),
+        y: Math.max(4, rect.top - srect.top + scroller.scrollTop - 40),
+      };
+    }
+
+    wrapper.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        finishRichEdit(false);
+      } else if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+        ev.preventDefault();
+        finishRichEdit(true);
+      }
+      ev.stopPropagation();
+    });
+    wrapper.addEventListener("focusout", (ev) => {
+      if (!wrapper.contains(ev.relatedTarget as Node | null)) finishRichEdit(true);
+    });
+
+    const { clientX, clientY } = e;
+    requestAnimationFrame(() => {
+      wrapper.focus();
+      try {
+        const point = document.caretRangeFromPoint(clientX, clientY);
+        if (point && wrapper.contains(point.startContainer)) {
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(point);
+        }
+      } catch {
+        // keep default caret
+      }
+    });
+  }
+
+  function finishRichEdit(commit: boolean) {
+    const wrapper = richWrapper;
+    const block = richBlock;
+    if (!wrapper || !block) return;
+    richWrapper = null;
+    richBlock = null;
+    richBar = null;
+    blockEditing = false;
+    const html = wrapper.innerHTML;
+    wrapper.outerHTML = richOriginalHtml;
+    if (!commit) return;
+    const original = app.content.slice(block.start, block.end);
+    const md = htmlToMarkdown(html).trim();
+    if (md && md !== original.trim()) {
+      app.content = app.content.slice(0, block.start) + md + app.content.slice(block.end);
+      app.scheduleAutosave();
+    }
+  }
+
+  /** Toolbar actions for the rich editor (mousedown is prevented, so the
+   *  selection inside the contentEditable block survives the click). */
+  function execCmd(command: string, value?: string) {
+    document.execCommand(command, false, value);
+  }
+
+  function toggleHeading(level: number) {
+    const anchor = window.getSelection()?.anchorNode;
+    const current =
+      anchor instanceof Element
+        ? anchor.closest("h1,h2,h3,h4,h5,h6")
+        : anchor?.parentElement?.closest("h1,h2,h3,h4,h5,h6");
+    const tag = `h${level}`;
+    execCmd("formatBlock", current?.tagName.toLowerCase() === tag ? "<p>" : `<${tag}>`);
+  }
+
+  function toggleQuote() {
+    const anchor = window.getSelection()?.anchorNode;
+    const inQuote = (
+      anchor instanceof Element ? anchor : anchor?.parentElement
+    )?.closest("blockquote");
+    if (inQuote) execCmd("outdent");
+    else execCmd("formatBlock", "<blockquote>");
+  }
+
+  function toggleInlineCode() {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return;
+    const anchor = sel.anchorNode;
+    const inCode = (anchor instanceof Element ? anchor : anchor?.parentElement)?.closest("code");
+    if (inCode?.parentNode) {
+      const parent = inCode.parentNode;
+      while (inCode.firstChild) parent.insertBefore(inCode.firstChild, inCode);
+      parent.removeChild(inCode);
+      parent.normalize();
+    } else {
+      const range = sel.getRangeAt(0);
+      if (range.collapsed) return;
+      const code = document.createElement("code");
+      try {
+        range.surroundContents(code);
+      } catch {
+        // selection crosses element boundaries; skip
+      }
+    }
+  }
+
+  // --- raw source path (code fences, math, footnotes) ------------------------
+  function startRawBlockEdit(el: HTMLElement, block: SourceBlock) {
     blockEditing = true;
     const original = app.content.slice(block.start, block.end);
-
-    // Land the caret near the click: match the rendered text just before the
-    // click point back into the raw source, falling back to a proportional
-    // position.
-    let caret = original.length;
-    try {
-      const point = document.caretRangeFromPoint(e.clientX, e.clientY);
-      if (point && el.contains(point.startContainer)) {
-        const pre = document.createRange();
-        pre.selectNodeContents(el);
-        pre.setEnd(point.startContainer, point.startOffset);
-        const preText = pre.toString();
-        const needle = preText.slice(-24);
-        const idx = needle ? original.indexOf(needle) : -1;
-        if (idx >= 0) {
-          caret = idx + needle.length;
-        } else {
-          const total = Math.max(1, el.textContent?.length ?? 1);
-          caret = Math.min(original.length, Math.round((preText.length / total) * original.length));
-        }
+    // For code blocks, edit only the code — keep the fence lines out of view.
+    let prefix = "";
+    let suffix = "";
+    let inner = original;
+    if (el.tagName === "PRE") {
+      const m = original.match(/^(\s{0,3}(?:`{3,}|~{3,})[^\n]*\n)([\s\S]*?)(\n\s{0,3}(?:`{3,}|~{3,})\s*)$/);
+      if (m) {
+        prefix = m[1];
+        inner = m[2];
+        suffix = m[3];
       }
-    } catch {
-      // caretRangeFromPoint unavailable; keep caret at the end.
     }
 
     const ta = document.createElement("textarea");
-    ta.value = original;
+    ta.value = inner;
     ta.className = "block-edit";
     ta.spellcheck = false;
     el.after(ta);
@@ -244,12 +376,11 @@
       if (done) return;
       done = true;
       blockEditing = false;
-      const value = ta.value;
+      const value = prefix + ta.value + suffix;
       ta.remove();
       el.style.display = "";
       if (commit && value !== original) {
-        app.content =
-          app.content.slice(0, block.start) + value + app.content.slice(block.end);
+        app.content = app.content.slice(0, block.start) + value + app.content.slice(block.end);
         app.scheduleAutosave();
       }
     };
@@ -267,7 +398,6 @@
     requestAnimationFrame(() => {
       resize();
       ta.focus();
-      ta.setSelectionRange(caret, caret);
     });
   }
 
@@ -435,5 +565,56 @@
   {/if}
   {#if hoverThread && hoverCard}
     <CommentHoverCard thread={hoverThread} x={hoverCard.x} y={hoverCard.y} />
+  {/if}
+  {#if richBar}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="no-print absolute z-30 flex items-center gap-0.5 rounded-lg border bg-popover p-1 shadow-md"
+      style="left: {richBar.x}px; top: {richBar.y}px"
+      onmousedown={(e) => e.preventDefault()}
+    >
+      {#each [
+        { icon: Bold, title: "Bold (⌘B)", action: () => execCmd("bold") },
+        { icon: Italic, title: "Italic (⌘I)", action: () => execCmd("italic") },
+        { icon: Strikethrough, title: "Strikethrough", action: () => execCmd("strikethrough") },
+        { icon: Code, title: "Inline code", action: toggleInlineCode },
+      ] as b (b.title)}
+        <button
+          class="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          title={b.title}
+          onclick={b.action}
+        >
+          <b.icon class="size-3.5" />
+        </button>
+      {/each}
+      <div class="mx-0.5 h-4 w-px bg-border"></div>
+      {#each [
+        { icon: Heading1, title: "Heading 1", action: () => toggleHeading(1) },
+        { icon: Heading2, title: "Heading 2", action: () => toggleHeading(2) },
+        { icon: Heading3, title: "Heading 3", action: () => toggleHeading(3) },
+      ] as b (b.title)}
+        <button
+          class="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          title={b.title}
+          onclick={b.action}
+        >
+          <b.icon class="size-3.5" />
+        </button>
+      {/each}
+      <div class="mx-0.5 h-4 w-px bg-border"></div>
+      {#each [
+        { icon: List, title: "Bullet list", action: () => execCmd("insertUnorderedList") },
+        { icon: ListOrdered, title: "Numbered list", action: () => execCmd("insertOrderedList") },
+        { icon: TextQuote, title: "Quote", action: toggleQuote },
+      ] as b (b.title)}
+        <button
+          class="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          title={b.title}
+          onclick={b.action}
+        >
+          <b.icon class="size-3.5" />
+        </button>
+      {/each}
+    </div>
   {/if}
 </div>

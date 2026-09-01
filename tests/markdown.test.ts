@@ -5,6 +5,7 @@ vi.mock("mermaid", () => ({
 }));
 
 import { extractBlocks, extractToc, renderMarkdown } from "$lib/markdown";
+import { htmlToMarkdown } from "$lib/richedit";
 
 const SAMPLE = `# Title
 
@@ -72,6 +73,33 @@ describe("extractBlocks", () => {
     const b = blocks[1];
     const edited = src.slice(0, b.start) + "FIRST!" + src.slice(b.end);
     expect(edited).toBe("# A\n\nFIRST!\n\nsecond\n");
+  });
+});
+
+describe("rich edit round-trip", () => {
+  const roundTrip = (md: string) => htmlToMarkdown(renderMarkdown(md)).trim();
+
+  it("round-trips inline formatting", () => {
+    expect(roundTrip("Some **bold**, *italic*, `code` and ~~struck~~ text.")).toBe(
+      "Some **bold**, *italic*, `code` and ~~struck~~ text.",
+    );
+  });
+
+  it("round-trips headings, lists and quotes", () => {
+    expect(roundTrip("## A heading")).toBe("## A heading");
+    expect(roundTrip("- one\n- two")).toBe("- one\n- two");
+    expect(roundTrip("> quoted text")).toBe("> quoted text");
+  });
+
+  it("round-trips links and task lists", () => {
+    expect(roundTrip("[site](https://x.dev)")).toBe("[site](https://x.dev)");
+    expect(roundTrip("- [x] done\n- [ ] todo")).toContain("[x] done");
+  });
+
+  it("writes local image paths back from data-md-src", () => {
+    expect(
+      htmlToMarkdown('<p><img src="asset://x" data-md-src="assets/a.png" alt="pic"></p>'),
+    ).toBe("![pic](assets/a.png)");
   });
 });
 

@@ -24,6 +24,12 @@ Tauri 2, Svelte 5, Tailwind CSS 4 and shadcn-svelte.
 - **Three views** — Reading (⌘1), Split (⌘2), Writing (⌘3) with a CodeMirror
   markdown editor and live preview. Changes autosave; live word count and
   reading time sit next to the title.
+- **Edit while reading** — click into any paragraph, heading or list in
+  reading view and just type: the block stays rendered (no markdown syntax)
+  with a floating bar for bold/italic/strike/code, headings, lists and
+  quotes. Click away or ⌘↩ applies, Esc cancels. Code blocks edit their code
+  in place (fences stay hidden); math and footnote blocks fall back to
+  source editing.
 - **Split-view scroll sync** — editor and preview scroll together; toggle it
   from the toolbar or the View menu.
 - **Table of contents** — ⌘T opens a right-hand panel listing every heading;

@@ -472,6 +472,23 @@
   font-weight: 600;
 }
 
+/* WYSIWYG block editing in reading mode */
+.prose-doc .rich-edit {
+  outline: 2px solid var(--ring);
+  border-radius: 8px;
+  padding: 0.35em 0.6em;
+  margin: 0.5em -0.6em;
+}
+.prose-doc .rich-edit:focus {
+  outline: 2px solid var(--ring);
+}
+.prose-doc .rich-edit > :first-child {
+  margin-top: 0;
+}
+.prose-doc .rich-edit > :last-child {
+  margin-bottom: 0;
+}
+
 /* In-place block editing in reading mode */
 .prose-doc textarea.block-edit {
   display: block;
