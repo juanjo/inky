@@ -18,8 +18,8 @@
   import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
   import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
   import { languages } from "@codemirror/language-data";
-  import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
-  import { tags } from "@lezer/highlight";
+  import { syntaxHighlighting } from "@codemirror/language";
+  import { inkyHighlightStyle } from "$lib/cmtheme";
   import { app, type CommentDraft } from "$lib/state.svelte";
   import { registerScroller } from "$lib/scrollsync";
   import { locateQuote } from "$lib/comments";
@@ -30,23 +30,6 @@
   let view: EditorView | null = null;
   let applyingExternal = false;
 
-  const mdHighlight = HighlightStyle.define([
-    { tag: tags.heading, fontWeight: "700", color: "var(--foreground)" },
-    { tag: tags.emphasis, fontStyle: "italic" },
-    { tag: tags.strong, fontWeight: "700" },
-    { tag: tags.strikethrough, textDecoration: "line-through" },
-    { tag: tags.link, color: "var(--prose-link)" },
-    { tag: tags.url, color: "var(--prose-link)" },
-    { tag: tags.quote, color: "var(--muted-foreground)", fontStyle: "italic" },
-    { tag: tags.monospace, color: "var(--hl-title)" },
-    { tag: tags.meta, color: "var(--muted-foreground)" },
-    { tag: tags.processingInstruction, color: "var(--muted-foreground)" },
-    { tag: tags.comment, color: "var(--hl-comment)", fontStyle: "italic" },
-    { tag: tags.keyword, color: "var(--hl-keyword)" },
-    { tag: tags.string, color: "var(--hl-string)" },
-    { tag: tags.number, color: "var(--hl-number)" },
-    { tag: [tags.function(tags.variableName), tags.className], color: "var(--hl-title)" },
-  ]);
 
   // --- search highlighting -------------------------------------------------
   interface Hits {
@@ -334,7 +317,7 @@
           placeholder("Start writing…"),
           keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
           markdown({ base: markdownLanguage, codeLanguages: languages }),
-          syntaxHighlighting(mdHighlight, { fallback: true }),
+          syntaxHighlighting(inkyHighlightStyle, { fallback: true }),
           hitsField,
           focusPlugin,
           commentsPlugin,

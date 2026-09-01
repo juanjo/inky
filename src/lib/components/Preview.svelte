@@ -12,6 +12,15 @@
   import { registerScroller } from "$lib/scrollsync";
   import { wrapQuote, unwrapMarks, contextAround } from "$lib/comments";
   import { htmlToMarkdown } from "$lib/richedit";
+  import { invoke } from "@tauri-apps/api/core";
+  import { EditorView as CmEditorView, keymap as cmKeymap, drawSelection } from "@codemirror/view";
+  import { StateEffect } from "@codemirror/state";
+  import { history, defaultKeymap, historyKeymap, indentWithTab } from "@codemirror/commands";
+  import { syntaxHighlighting, LanguageDescription } from "@codemirror/language";
+  import { languages as codeLanguages } from "@codemirror/language-data";
+  import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+  import { inkyHighlightStyle } from "$lib/cmtheme";
+  import { toast } from "svelte-sonner";
   import Bold from "@lucide/svelte/icons/bold";
   import Italic from "@lucide/svelte/icons/italic";
   import Strikethrough from "@lucide/svelte/icons/strikethrough";
@@ -211,7 +220,7 @@
     if (!block) return false;
     // Blocks whose rendering can't round-trip through HTML→markdown (code
     // fences, math, footnote refs) get the plain source editor instead.
-    if (el.tagName === "PRE" || el.querySelector(".katex, sup a")) {
+    if (el.tagName === "PRE" || el.querySelector("pre, .katex, sup a")) {
       startRawBlockEdit(el, block);
     } else {
       startRichBlockEdit(el, block, e);
@@ -345,6 +354,8 @@
   }
 
   // --- raw source path (code fences, math, footnotes) ------------------------
+  // A small embedded CodeMirror: real editing behavior (Enter, undo, indent)
+  // plus syntax coloring in the fence's language.
   function startRawBlockEdit(el: HTMLElement, block: SourceBlock) {
     blockEditing = true;
     const original = app.content.slice(block.start, block.end);
@@ -352,34 +363,34 @@
     let prefix = "";
     let suffix = "";
     let inner = original;
-    if (el.tagName === "PRE") {
-      const m = original.match(/^(\s{0,3}(?:`{3,}|~{3,})[^\n]*\n)([\s\S]*?)(\n\s{0,3}(?:`{3,}|~{3,})\s*)$/);
+    let fenceLang: string | null = null;
+    const isCode = el.tagName === "PRE";
+    if (isCode) {
+      const m = original.match(
+        /^(\s{0,3}(?:`{3,}|~{3,})([^\n]*)\n)([\s\S]*?)(\n\s{0,3}(?:`{3,}|~{3,})\s*)$/,
+      );
       if (m) {
         prefix = m[1];
-        inner = m[2];
-        suffix = m[3];
+        fenceLang = m[2].trim() || null;
+        inner = m[3];
+        suffix = m[4];
       }
     }
 
-    const ta = document.createElement("textarea");
-    ta.value = inner;
-    ta.className = "block-edit";
-    ta.spellcheck = false;
-    el.after(ta);
+    const host = document.createElement("div");
+    host.className = "block-edit-cm";
+    el.after(host);
     el.style.display = "none";
-    const resize = () => {
-      ta.style.height = "0";
-      ta.style.height = ta.scrollHeight + "px";
-    };
-    ta.addEventListener("input", resize);
 
     let done = false;
+    let view: CmEditorView | null = null;
     const finish = (commit: boolean) => {
-      if (done) return;
+      if (done || !view) return;
       done = true;
       blockEditing = false;
-      const value = prefix + ta.value + suffix;
-      ta.remove();
+      const value = prefix + view.state.doc.toString() + suffix;
+      view.destroy();
+      host.remove();
       el.style.display = "";
       if (commit && value !== original) {
         blockMap = new WeakMap();
@@ -387,21 +398,35 @@
         app.scheduleAutosave();
       }
     };
-    ta.addEventListener("blur", () => finish(true));
-    ta.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        finish(false);
-      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        finish(true);
-      }
-      e.stopPropagation();
+
+    view = new CmEditorView({
+      parent: host,
+      doc: inner,
+      extensions: [
+        history(),
+        drawSelection(),
+        CmEditorView.lineWrapping,
+        cmKeymap.of([
+          { key: "Escape", run: () => (finish(false), true) },
+          { key: "Mod-Enter", run: () => (finish(true), true) },
+          ...defaultKeymap,
+          ...historyKeymap,
+          indentWithTab,
+        ]),
+        syntaxHighlighting(inkyHighlightStyle, { fallback: true }),
+        CmEditorView.updateListener.of((u) => {
+          if (u.focusChanged && !u.view.hasFocus) finish(true);
+        }),
+        ...(isCode ? [] : [markdown({ base: markdownLanguage })]),
+      ],
     });
-    requestAnimationFrame(() => {
-      resize();
-      ta.focus();
-    });
+    if (fenceLang) {
+      const desc = LanguageDescription.matchLanguageName(codeLanguages, fenceLang, true);
+      desc?.load().then((support) => {
+        if (!done) view?.dispatch({ effects: StateEffect.appendConfig.of(support) });
+      });
+    }
+    requestAnimationFrame(() => view?.focus());
   }
 
   // --- hover preview of comment threads ------------------------------------
@@ -528,14 +553,55 @@
       app.openThread(mark.dataset.threadId);
       return;
     }
-    // Open external links in the default browser instead of the webview.
     const anchor = (event.target as HTMLElement).closest("a");
-    if (anchor?.href && /^https?:/.test(anchor.href)) {
+    if (anchor) {
+      // Never let a link navigate the webview itself (that's how you end up
+      // on an unescapable 404 page).
       event.preventDefault();
-      import("@tauri-apps/plugin-opener").then(({ openUrl }) => openUrl(anchor.href));
+      handleLink(anchor.getAttribute("href") ?? "");
       return;
     }
     maybeStartBlockEdit(event);
+  }
+
+  function handleLink(href: string) {
+    if (!href) return;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+      // External scheme (https, mailto, …) → the user's default apps.
+      import("@tauri-apps/plugin-opener").then(({ openUrl }) =>
+        openUrl(href).catch(() => toast.error(`Could not open ${href}`)),
+      );
+      return;
+    }
+    if (href.startsWith("#")) {
+      document
+        .getElementById(decodeURIComponent(href.slice(1)))
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    // Relative link: resolve against the current document's folder.
+    if (!app.currentPath) return;
+    const dir = app.currentPath.slice(0, app.currentPath.lastIndexOf("/"));
+    const parts = `${dir}/${decodeURIComponent(href)}`.split("/");
+    const resolved: string[] = [];
+    for (const part of parts) {
+      if (part === "" || part === ".") continue;
+      if (part === "..") resolved.pop();
+      else resolved.push(part);
+    }
+    const target = "/" + resolved.join("/");
+    invoke<boolean>("path_exists", { path: target }).then(async (exists) => {
+      if (!exists) {
+        toast.error(`Linked file not found: ${href}`);
+        return;
+      }
+      if (/\.(md|markdown|mmd)$/i.test(target)) {
+        app.openDoc(target);
+      } else {
+        const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+        revealItemInDir(target);
+      }
+    });
   }
 </script>
 

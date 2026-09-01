@@ -480,23 +480,37 @@
   caret-color: var(--foreground);
 }
 
-/* Plain-source block editing (code fences, math): styled like the rendered
-   code block so it reads as editing in place, not as a form field. */
-.prose-doc textarea.block-edit {
-  display: block;
-  width: 100%;
+/* Plain-source block editing (code fences, math): an embedded CodeMirror
+   styled exactly like the rendered code block, so it reads as editing in
+   place rather than as a form field. */
+.prose-doc .block-edit-cm {
   margin: 1.2em 0;
-  padding: 1em 1.2em;
   border: 1px solid var(--border);
   border-radius: 8px;
-  outline: none;
   background: var(--prose-code-bg);
-  color: var(--foreground);
-  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-  font-size: 0.85em;
-  line-height: 1.55;
-  resize: none;
   overflow: hidden;
+}
+.prose-doc .block-edit-cm .cm-editor {
+  background: transparent;
+  font-size: 0.85em;
+  outline: none;
+}
+.prose-doc .block-edit-cm .cm-editor.cm-focused {
+  outline: none;
+}
+.prose-doc .block-edit-cm .cm-scroller {
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  line-height: 1.55;
+  padding: 1em 1.2em;
+}
+.prose-doc .block-edit-cm .cm-cursor {
+  border-left-color: var(--foreground);
+}
+.prose-doc .block-edit-cm .cm-selectionBackground {
+  background: var(--editor-selection) !important;
+}
+.prose-doc .block-edit-cm ::selection {
+  background: transparent !important;
 }
 
 /* ---------------------------------- */
