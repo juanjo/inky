@@ -180,119 +180,59 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-// --- app-hosted MCP server (node subprocess in HTTP mode) -------------------
+// --- app-hosted MCP server (in-process, streamable HTTP) --------------------
 
-/// GUI apps on macOS get a minimal PATH (no /usr/local/bin, homebrew, nvm…),
-/// so `node` must be resolved explicitly.
-fn find_node() -> Option<PathBuf> {
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            let candidate = Path::new(dir).join("node");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    let home = Path::new(&home);
-    let mut candidates: Vec<PathBuf> = vec![
-        PathBuf::from("/opt/homebrew/bin/node"),
-        PathBuf::from("/usr/local/bin/node"),
-        home.join(".volta/bin/node"),
-        home.join(".asdf/shims/node"),
-    ];
-    // nvm: pick the newest installed version.
-    if let Ok(entries) = fs::read_dir(home.join(".nvm/versions/node")) {
-        let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        versions.sort();
-        if let Some(latest) = versions.last() {
-            candidates.push(latest.join("bin/node"));
-        }
-    }
-    candidates.into_iter().find(|p| p.is_file())
-}
+struct McpServer(std::sync::Mutex<Option<mcp::HttpHandle>>);
 
-struct McpProc(std::sync::Mutex<Option<std::process::Child>>);
-
-fn kill_mcp(state: &McpProc) {
+fn stop_mcp_server(state: &McpServer) {
     if let Ok(mut guard) = state.0.lock() {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(handle) = guard.take() {
+            handle.stop();
         }
     }
 }
 
 #[tauri::command]
-fn mcp_status(state: tauri::State<McpProc>) -> bool {
+fn mcp_status(state: tauri::State<McpServer>) -> bool {
     let mut guard = state.0.lock().unwrap();
-    match guard.as_mut() {
-        Some(child) => match child.try_wait() {
-            Ok(None) => true,
-            _ => {
-                *guard = None;
-                false
-            }
-        },
-        None => false,
+    match guard.as_ref() {
+        Some(handle) if handle.is_running() => true,
+        _ => {
+            *guard = None;
+            false
+        }
     }
 }
 
 #[tauri::command]
-fn start_mcp(
+async fn start_mcp(
     app: tauri::AppHandle,
-    state: tauri::State<McpProc>,
+    state: tauri::State<'_, McpServer>,
     port: u16,
 ) -> Result<String, String> {
-    let url = format!("http://127.0.0.1:{port}/mcp");
-    {
-        let mut guard = state.0.lock().unwrap();
-        if let Some(child) = guard.as_mut() {
-            if matches!(child.try_wait(), Ok(None)) {
-                return Ok(url);
-            }
+    if let Some(handle) = state.0.lock().unwrap().as_ref() {
+        if handle.is_running() {
+            return Ok(handle.url());
         }
     }
-    let mut script = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("server.bundle.mjs");
-    if !script.exists() {
-        // Dev fallback: use the bundle (or raw server) from the source tree.
-        for candidate in [
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../mcp/server.bundle.mjs"),
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../mcp/server.mjs"),
-        ] {
-            if Path::new(candidate).exists() {
-                script = PathBuf::from(candidate);
-                break;
-            }
-        }
-    }
-    if !script.exists() {
-        return Err(format!("MCP server script not found at {}", script.display()));
-    }
-    let node = find_node().ok_or_else(|| {
-        "Node.js not found — install it (e.g. `brew install node`) to run the MCP server"
-            .to_string()
-    })?;
-    let child = std::process::Command::new(node)
-        .arg(&script)
-        .arg("--http")
-        .arg(port.to_string())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("could not start node (is Node.js installed?): {e}"))?;
-    *state.0.lock().unwrap() = Some(child);
+    let lib = open_library(&app)?;
+    let handle = mcp::serve_http(lib, port).await?;
+    let url = handle.url();
+    *state.0.lock().unwrap() = Some(handle);
     Ok(url)
 }
 
 #[tauri::command]
-fn stop_mcp(state: tauri::State<McpProc>) {
-    kill_mcp(&state);
+fn stop_mcp(state: tauri::State<McpServer>) {
+    stop_mcp_server(&state);
+}
+
+/// Absolute path of the running binary — what MCP clients register for stdio mode.
+#[tauri::command]
+fn app_binary_path() -> Result<String, String> {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -574,7 +514,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .manage(McpProc(std::sync::Mutex::new(None)))
+        .manage(McpServer(std::sync::Mutex::new(None)))
         .setup(|app| {
             build_menu(app)?;
             Ok(())
@@ -606,14 +546,14 @@ pub fn run() {
             quit_app,
             start_mcp,
             stop_mcp,
-            mcp_status
+            mcp_status,
+            app_binary_path
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
-                // Don't leave the MCP node subprocess orphaned.
-                kill_mcp(&app_handle.state::<McpProc>());
+                stop_mcp_server(&app_handle.state::<McpServer>());
             }
         });
 }
