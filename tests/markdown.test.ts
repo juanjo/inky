@@ -4,7 +4,7 @@ vi.mock("mermaid", () => ({
   default: { initialize: vi.fn(), render: vi.fn() },
 }));
 
-import { extractToc, renderMarkdown } from "$lib/markdown";
+import { extractBlocks, extractToc, renderMarkdown } from "$lib/markdown";
 
 const SAMPLE = `# Title
 
@@ -45,6 +45,33 @@ describe("extractToc", () => {
     for (const entry of toc) {
       expect(html).toContain(`id="${entry.id}"`);
     }
+  });
+});
+
+describe("extractBlocks", () => {
+  it("splits top-level blocks on blank lines, fence-aware", () => {
+    const src = "# Head\n\nPara one\nstill para one\n\n```js\n\nconst x = 1;\n\n```\n\nPara two\n";
+    const blocks = extractBlocks(src).map((b) => src.slice(b.start, b.end));
+    expect(blocks).toEqual([
+      "# Head",
+      "Para one\nstill para one",
+      "```js\n\nconst x = 1;\n\n```",
+      "Para two",
+    ]);
+  });
+
+  it("merges loose list items into one block", () => {
+    const src = "intro\n\n- one\n\n- two\n  continued\n\noutro\n";
+    const blocks = extractBlocks(src).map((b) => src.slice(b.start, b.end));
+    expect(blocks).toEqual(["intro", "- one\n\n- two\n  continued", "outro"]);
+  });
+
+  it("round-trips edits by char range", () => {
+    const src = "# A\n\nfirst\n\nsecond\n";
+    const blocks = extractBlocks(src);
+    const b = blocks[1];
+    const edited = src.slice(0, b.start) + "FIRST!" + src.slice(b.end);
+    expect(edited).toBe("# A\n\nFIRST!\n\nsecond\n");
   });
 });
 

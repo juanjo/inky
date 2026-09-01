@@ -89,6 +89,76 @@ export function extractToc(src: string): TocEntry[] {
   return out;
 }
 
+export interface SourceBlock {
+  /** Char offsets into the source, end exclusive (no trailing blank lines). */
+  start: number;
+  end: number;
+}
+
+/**
+ * Split markdown source into top-level blocks (fence-aware, blank-line
+ * separated, loose lists merged). Used for in-place block editing in the
+ * preview; alignment with rendered elements is validated separately, so this
+ * only needs to be right for common structures.
+ */
+export function extractBlocks(src: string): SourceBlock[] {
+  const lines = src.split("\n");
+  const offsets: number[] = [];
+  let acc = 0;
+  for (const line of lines) {
+    offsets.push(acc);
+    acc += line.length + 1;
+  }
+  const lineEnd = (i: number) => offsets[i] + lines[i].length;
+
+  interface Seg {
+    startLine: number;
+    endLine: number;
+  }
+  const segments: Seg[] = [];
+  let current: Seg | null = null;
+  let fence: string | null = null;
+  lines.forEach((line, i) => {
+    if (fence !== null) {
+      current!.endLine = i;
+      const f = line.match(/^\s{0,3}(`{3,}|~{3,})\s*$/);
+      if (f && f[1].startsWith(fence)) fence = null;
+      return;
+    }
+    if (line.trim() === "") {
+      current = null;
+      return;
+    }
+    const f = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (!current) {
+      current = { startLine: i, endLine: i };
+      segments.push(current);
+    } else {
+      current.endLine = i;
+    }
+    if (f) fence = f[1][0].repeat(3);
+  });
+
+  // Merge loose lists / indented continuations into one block, matching how
+  // markdown renders them as a single element.
+  const isListLine = (l: string) => /^\s{0,3}([-*+]|\d+[.)])\s/.test(l);
+  const merged: Seg[] = [];
+  for (const seg of segments) {
+    const prev = merged.at(-1);
+    const first = lines[seg.startLine];
+    if (
+      prev &&
+      (isListLine(first) || /^\s{2,}\S/.test(first)) &&
+      (isListLine(lines[prev.startLine]) || isListLine(lines[prev.endLine]))
+    ) {
+      prev.endLine = seg.endLine;
+    } else {
+      merged.push({ ...seg });
+    }
+  }
+  return merged.map((s) => ({ start: offsets[s.startLine], end: lineEnd(s.endLine) }));
+}
+
 marked.use({
   renderer: {
     heading({ tokens, depth, text }) {

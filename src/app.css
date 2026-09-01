@@ -472,6 +472,24 @@
   font-weight: 600;
 }
 
+/* In-place block editing in reading mode */
+.prose-doc textarea.block-edit {
+  display: block;
+  width: 100%;
+  margin: 0.9em 0;
+  padding: 0.7em 0.85em;
+  border: none;
+  border-radius: 8px;
+  outline: 2px solid var(--ring);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  color: var(--foreground);
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  line-height: 1.6;
+  resize: none;
+  overflow: hidden;
+}
+
 /* ---------------------------------- */
 /* Comment highlights                 */
 /* ---------------------------------- */

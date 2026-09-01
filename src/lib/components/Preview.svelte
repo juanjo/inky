@@ -2,7 +2,14 @@
   import { onMount, tick, untrack } from "svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { app, type CommentDraft } from "$lib/state.svelte";
-  import { renderMarkdown, renderMermaidBlocks, resetMermaidTheme } from "$lib/markdown";
+  import {
+    renderMarkdown,
+    renderMermaidBlocks,
+    resetMermaidTheme,
+    extractBlocks,
+    type SourceBlock,
+  } from "$lib/markdown";
+  import Pencil from "@lucide/svelte/icons/pencil";
   import { registerScroller } from "$lib/scrollsync";
   import { wrapQuote, unwrapMarks, contextAround } from "$lib/comments";
   import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
@@ -26,6 +33,8 @@
     const src = app.content;
     const isMermaid = app.isMermaidDoc;
     app.currentPath;
+    // Hold re-renders while a block is being edited in place.
+    if (blockEditing) return;
     if (firstRender) {
       firstRender = false;
       html = toHtml(src, isMermaid);
@@ -74,6 +83,7 @@
         await renderMermaidBlocks(container, theme);
         resolveLocalImages();
         applyCommentHighlights();
+        computeBlockMap();
       }
     });
   });
@@ -90,11 +100,13 @@
   // --- select-to-comment ---------------------------------------------------
   let selAction = $state<{ x: number; y: number; draft: CommentDraft } | null>(null);
 
-  function onMouseUp() {
+  function onMouseUp(e: MouseEvent) {
+    if (e.target instanceof HTMLTextAreaElement) return;
     setTimeout(() => {
       const sel = window.getSelection();
       if (
         app.isMermaidDoc ||
+        blockEditing ||
         !sel ||
         sel.isCollapsed ||
         !container ||
@@ -125,6 +137,122 @@
     app.startCommentDraft(selAction.draft);
     selAction = null;
     window.getSelection()?.removeAllRanges();
+  }
+
+  // --- in-place block editing (reading mode) --------------------------------
+  let blockEditing = $state(false);
+  let pencil = $state<{ el: HTMLElement; block: SourceBlock; x: number; y: number } | null>(null);
+  let blockMap = new WeakMap<Element, SourceBlock>();
+
+  function normalizeText(s: string): string {
+    return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  }
+
+  function stripMdSyntax(s: string): string {
+    return s
+      .replace(/^(`{3,}|~{3,}).*$/gm, "")
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+      .replace(/^\s{0,3}>\s?/gm, "")
+      .replace(/^\s*([-*+]|\d+[.)])\s+\[[ xX]\]\s+/gm, "")
+      .replace(/^\s*([-*+]|\d+[.)])\s+/gm, "")
+      .replace(/[*_~`|]/g, "");
+  }
+
+  /**
+   * Align rendered top-level elements with source blocks, keeping only
+   * pairs whose text plausibly matches — mismatches (footnote sections,
+   * math, mermaid, reference defs) simply don't get an edit affordance.
+   */
+  function computeBlockMap() {
+    blockMap = new WeakMap();
+    if (!container || app.isMermaidDoc) return;
+    const blocks = extractBlocks(app.content);
+    let bi = 0;
+    for (const el of container.children) {
+      const elNorm = normalizeText(el.textContent ?? "").slice(0, 32);
+      if (!elNorm) continue;
+      for (let j = bi; j < Math.min(bi + 3, blocks.length); j++) {
+        const raw = app.content.slice(blocks[j].start, blocks[j].end);
+        const bNorm = normalizeText(stripMdSyntax(raw)).slice(0, 32);
+        if (!bNorm) continue;
+        if (bNorm.startsWith(elNorm.slice(0, 16)) || elNorm.startsWith(bNorm.slice(0, 16))) {
+          blockMap.set(el, blocks[j]);
+          bi = j + 1;
+          break;
+        }
+      }
+    }
+  }
+
+  function onBlockHover(e: MouseEvent) {
+    if (app.viewMode !== "preview" || blockEditing || !container || !scroller) return;
+    let el = e.target as HTMLElement | null;
+    while (el && el.parentElement !== container) el = el.parentElement;
+    const block = el ? blockMap.get(el) : undefined;
+    if (el && block) {
+      const rect = el.getBoundingClientRect();
+      const srect = scroller.getBoundingClientRect();
+      pencil = {
+        el,
+        block,
+        x: Math.max(2, rect.left - srect.left - 30),
+        y: rect.top - srect.top + scroller.scrollTop + 2,
+      };
+    } else if (!(e.target as HTMLElement).closest?.(".block-pencil")) {
+      pencil = null;
+    }
+  }
+
+  function startBlockEdit() {
+    if (!pencil || blockEditing) return;
+    const { el, block } = pencil;
+    pencil = null;
+    blockEditing = true;
+    const original = app.content.slice(block.start, block.end);
+
+    const ta = document.createElement("textarea");
+    ta.value = original;
+    ta.className = "block-edit";
+    ta.spellcheck = false;
+    el.after(ta);
+    el.style.display = "none";
+    const resize = () => {
+      ta.style.height = "0";
+      ta.style.height = ta.scrollHeight + "px";
+    };
+    ta.addEventListener("input", resize);
+
+    let done = false;
+    const finish = (commit: boolean) => {
+      if (done) return;
+      done = true;
+      blockEditing = false;
+      const value = ta.value;
+      ta.remove();
+      el.style.display = "";
+      if (commit && value !== original) {
+        app.content =
+          app.content.slice(0, block.start) + value + app.content.slice(block.end);
+        app.scheduleAutosave();
+      }
+    };
+    ta.addEventListener("blur", () => finish(true));
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        finish(true);
+      }
+      e.stopPropagation();
+    });
+    requestAnimationFrame(() => {
+      resize();
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
   }
 
   // --- hover preview of comment threads ------------------------------------
@@ -268,7 +396,11 @@
   onscroll={onScroll}
   onmouseup={onMouseUp}
   onmouseover={onHover}
-  onmouseleave={() => (hoverCard = null)}
+  onmousemove={onBlockHover}
+  onmouseleave={() => {
+    hoverCard = null;
+    pencil = null;
+  }}
 >
   <div class="prose-doc" bind:this={container}>
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
@@ -289,5 +421,16 @@
   {/if}
   {#if hoverThread && hoverCard}
     <CommentHoverCard thread={hoverThread} x={hoverCard.x} y={hoverCard.y} />
+  {/if}
+  {#if pencil && !blockEditing}
+    <button
+      class="block-pencil no-print absolute z-10 flex size-6 items-center justify-center rounded-md border bg-popover text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
+      style="left: {pencil.x}px; top: {pencil.y}px"
+      title="Edit this block (Esc to cancel, ⌘↩ or click away to apply)"
+      onmousedown={(e) => e.preventDefault()}
+      onclick={startBlockEdit}
+    >
+      <Pencil class="size-3.5" />
+    </button>
   {/if}
 </div>

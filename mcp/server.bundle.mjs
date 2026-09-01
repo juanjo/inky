@@ -39029,6 +39029,57 @@ ${listing || "(library is empty)"}`);
       return text(`Patched ${relPath}`);
     }
   );
+  function versionPartsFor(absPath) {
+    const ext = path.extname(absPath);
+    const stem = path.basename(absPath, ext);
+    return { dir: path.join(path.dirname(absPath), HISTORY_DIR), stem, ext };
+  }
+  server.registerTool(
+    "list_versions",
+    {
+      title: "List a document's saved versions",
+      description: "List snapshots of a document from its hidden history (kept automatically before content-changing overwrites, at most one per 10 minutes). Use read_version to fetch one \u2014 e.g. to report what changed, or to recover lost text.",
+      inputSchema: {
+        path: external_exports.string().describe("Library-relative document path")
+      }
+    },
+    async ({ path: relPath }) => {
+      const { resolved } = await resolveInLibrary(relPath);
+      const { dir, stem, ext } = versionPartsFor(resolved);
+      let names = [];
+      try {
+        names = (await fs.readdir(dir)).filter((f) => f.startsWith(stem + ".") && f.endsWith(ext));
+      } catch {
+      }
+      if (names.length === 0) return text(`No saved versions for ${relPath}`);
+      const rows = [];
+      for (const name of names) {
+        const st = await fs.stat(path.join(dir, name));
+        rows.push({ name, mtime: st.mtime });
+      }
+      rows.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+      return text(rows.map((r) => `${r.name}  (saved ${r.mtime.toISOString()})`).join("\n"));
+    }
+  );
+  server.registerTool(
+    "read_version",
+    {
+      title: "Read a saved version of a document",
+      description: "Read the full content of one snapshot from a document's history. Get version names from list_versions. To restore it, write the content back with write_document.",
+      inputSchema: {
+        path: external_exports.string().describe("Library-relative document path"),
+        version: external_exports.string().describe("Version file name from list_versions")
+      }
+    },
+    async ({ path: relPath, version: version2 }) => {
+      const { resolved } = await resolveInLibrary(relPath);
+      const { dir, stem, ext } = versionPartsFor(resolved);
+      if (version2.includes("/") || !version2.startsWith(stem + ".") || !version2.endsWith(ext)) {
+        throw new Error("invalid version name");
+      }
+      return text(await fs.readFile(path.join(dir, version2), "utf8"));
+    }
+  );
   server.registerTool(
     "rename_document",
     {
@@ -39272,8 +39323,8 @@ ${listing || "(library is empty)"}`);
 }
 var TOOL_SUMMARY = `list_documents, read_document, write_document, patch_document,
            rename_document, move_document, create_folder, delete_document,
-           search_documents, list_comments, create_comment, reply_to_comment,
-           resolve_comment`;
+           search_documents, list_versions, read_version, list_comments,
+           create_comment, reply_to_comment, resolve_comment`;
 async function serveHttp(port) {
   const { StreamableHTTPServerTransport: StreamableHTTPServerTransport2 } = await Promise.resolve().then(() => (init_streamableHttp(), streamableHttp_exports));
   const http = await import("node:http");
