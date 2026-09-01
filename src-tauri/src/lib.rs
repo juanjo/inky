@@ -59,9 +59,9 @@ fn library_root(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 fn set_library_root(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    Library::open(&path)?;
-    write_config(&app, &Config { library: Some(path.clone()) })?;
-    Ok(path)
+    let root = to_string(Library::open(&path)?.root().to_path_buf());
+    write_config(&app, &Config { library: Some(root.clone()) })?;
+    Ok(root)
 }
 
 #[tauri::command]
@@ -218,7 +218,9 @@ async fn start_mcp(
     let lib = open_library(&app)?;
     let handle = mcp::serve_http(lib, port).await?;
     let url = handle.url();
-    *state.0.lock().unwrap() = Some(handle);
+    if let Some(old) = state.0.lock().unwrap().replace(handle) {
+        old.stop();
+    }
     Ok(url)
 }
 

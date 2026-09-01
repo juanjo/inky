@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 pub const DOC_EXTENSIONS: [&str; 3] = ["md", "markdown", "mmd"];
 pub const APP_IDENTIFIER: &str = "com.inky.app";
@@ -181,7 +181,10 @@ fn doc_parts(doc: &Path) -> Result<(&Path, &str, &str), String> {
     Ok((parent, stem, ext))
 }
 
-/// History files belonging to `doc`, sorted by name (`stem.<unix-secs>.ext`).
+/// History files belonging to `doc`, oldest first. Sorted by modification
+/// time rather than name: files written by the earlier JS server use ISO
+/// timestamps (`stem.2026-09-01-10-36-00.ext`) which would otherwise sort
+/// after every unix-second name (`stem.1756716960.ext`).
 fn history_files(doc: &Path) -> Vec<PathBuf> {
     let Ok((parent, stem, ext)) = doc_parts(doc) else {
         return Vec::new();
@@ -202,7 +205,10 @@ fn history_files(doc: &Path) -> Vec<PathBuf> {
                 .collect()
         })
         .unwrap_or_default();
-    mine.sort();
+    mine.sort_by_cached_key(|p| {
+        let mtime = fs::metadata(p).and_then(|m| m.modified()).ok();
+        (mtime, p.clone())
+    });
     mine
 }
 
@@ -397,7 +403,9 @@ impl Library {
         let candidate = self.root.join(path);
         let mut existing = candidate.clone();
         let mut suffix: Vec<std::ffi::OsString> = Vec::new();
-        while !existing.exists() {
+        // `symlink_metadata` (not `exists`) so a dangling symlink counts as
+        // existing and `canonicalize` below fails instead of following it.
+        while fs::symlink_metadata(&existing).is_err() {
             match existing.file_name() {
                 Some(name) => suffix.push(name.to_os_string()),
                 None => return Err("invalid path".into()),
@@ -407,15 +415,11 @@ impl Library {
                 .ok_or_else(|| "invalid path".to_string())?
                 .to_path_buf();
         }
+        // `file_name()` is `None` for a trailing `..`, so the loop above has
+        // already rejected any `..` in the not-yet-existing suffix.
         let mut resolved = existing.canonicalize().map_err(|e| e.to_string())?;
         for part in suffix.iter().rev() {
-            match Path::new(part).components().next() {
-                Some(Component::ParentDir) => {
-                    resolved.pop();
-                }
-                Some(Component::CurDir) | None => {}
-                _ => resolved.push(part),
-            }
+            resolved.push(part);
         }
         if resolved.starts_with(&self.root) {
             Ok(resolved)
@@ -615,11 +619,12 @@ impl Library {
     /// clash picks "name 2.md" rather than failing.
     pub fn move_into(&self, path: &str, target_dir: &str) -> Result<PathBuf, String> {
         let src = self.resolve(path)?;
-        let dst_dir = self.ensure_folder(target_dir)?;
+        let dst_dir = self.resolve(target_dir)?;
         if dst_dir == src || dst_dir.starts_with(&src) {
             return Err("cannot move a folder into itself".into());
         }
         let name = src.file_name().ok_or("invalid source")?;
+        fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
         if src.parent() == Some(dst_dir.as_path()) {
             return Ok(src);
         }
@@ -677,7 +682,9 @@ impl Library {
         if raw.trim().is_empty() {
             return Ok(Vec::new());
         }
-        Ok(serde_json::from_str::<Sidecar>(&raw).map(|s| s.threads).unwrap_or_default())
+        serde_json::from_str::<Sidecar>(&raw)
+            .map(|s| s.threads)
+            .map_err(|e| format!("comments sidecar for {path} is unreadable: {e}"))
     }
 
     /// Persist threads in the frontend's sidecar format; an empty list removes the file.
@@ -727,6 +734,54 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), lib.root().join("link")).unwrap();
         assert!(lib.resolve("link/x.md").is_err());
+    }
+
+    #[test]
+    fn resolve_rejects_dangling_symlink() {
+        let (_d, lib) = temp_lib();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("x.md"), lib.root().join("evil.md")).unwrap();
+        assert!(lib.resolve("evil.md").is_err());
+        assert!(lib.write("evil.md", "boom").is_err());
+        assert!(!outside.path().join("x.md").exists());
+    }
+
+    #[test]
+    fn history_order_is_by_mtime_even_with_legacy_iso_names() {
+        let (_d, lib) = temp_lib();
+        lib.write("h.md", "v1").unwrap();
+        let dir = lib.root().join(HISTORY_DIR);
+        fs::create_dir_all(&dir).unwrap();
+        // Legacy (JS-era) name that sorts *after* unix-second names bytewise.
+        let legacy = dir.join("h.2026-01-01-00-00-00.md");
+        fs::write(&legacy, "legacy").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::open(&legacy).unwrap().set_modified(old).unwrap();
+        lib.write("h.md", "v2").unwrap(); // snapshots v1 (legacy is older than 10 min)
+        lib.write("h.md", "v3").unwrap(); // must NOT snapshot: the newest is seconds old
+        let mut names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert_eq!(lib.list_versions("h.md").unwrap()[1].name, "h.2026-01-01-00-00-00.md");
+    }
+
+    #[test]
+    fn unreadable_sidecar_is_an_error_not_an_empty_list() {
+        let (_d, lib) = temp_lib();
+        lib.write("u.md", "").unwrap();
+        fs::write(lib.root().join(".u.md.comments.json"), "{not json").unwrap();
+        assert!(lib.threads("u.md").is_err());
+    }
+
+    #[test]
+    fn move_into_self_does_not_create_the_target() {
+        let (_d, lib) = temp_lib();
+        lib.ensure_folder("F").unwrap();
+        assert!(lib.move_into("F", "F/G").is_err());
+        assert!(!lib.root().join("F/G").exists());
     }
 
     #[test]

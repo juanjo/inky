@@ -190,6 +190,7 @@ impl InkyMcp {
 
     #[tool(
         name = "list_documents",
+        annotations(title = "List Inky documents"),
         description = "List every document and folder in the user's Inky library. Paths are relative to the library root. Documents are markdown (.md) or standalone mermaid diagrams (.mmd)."
     )]
     async fn list_documents(&self) -> CallToolResult {
@@ -217,6 +218,7 @@ impl InkyMcp {
 
     #[tool(
         name = "read_document",
+        annotations(title = "Read an Inky document"),
         description = "Read the raw markdown (or mermaid) source of a document in the Inky library."
     )]
     async fn read_document(&self, Parameters(p): Parameters<PathParams>) -> CallToolResult {
@@ -225,6 +227,7 @@ impl InkyMcp {
 
     #[tool(
         name = "write_document",
+        annotations(title = "Create or update an Inky document"),
         description = "Write a markdown document into the Inky library. Creates the document (and any missing folders) if it does not exist, otherwise overwrites it. Use a .md extension for markdown and .mmd for standalone mermaid diagrams. Mermaid code fences inside .md files render as diagrams in Inky."
     )]
     async fn write_document(&self, Parameters(p): Parameters<WriteParams>) -> CallToolResult {
@@ -247,6 +250,7 @@ impl InkyMcp {
 
     #[tool(
         name = "patch_document",
+        annotations(title = "Edit part of an Inky document"),
         description = "Replace an exact text snippet inside a document. Prefer this over write_document for edits — it fails safely if the document changed since you read it. old_text must appear exactly once (include surrounding context to disambiguate)."
     )]
     async fn patch_document(&self, Parameters(p): Parameters<PatchParams>) -> CallToolResult {
@@ -259,6 +263,7 @@ impl InkyMcp {
 
     #[tool(
         name = "list_versions",
+        annotations(title = "List a document's saved versions"),
         description = "List snapshots of a document from its hidden history (kept automatically before content-changing overwrites, at most one per 10 minutes). Use read_version to fetch one — e.g. to report what changed, or to recover lost text."
     )]
     async fn list_versions(&self, Parameters(p): Parameters<PathParams>) -> CallToolResult {
@@ -276,6 +281,7 @@ impl InkyMcp {
 
     #[tool(
         name = "read_version",
+        annotations(title = "Read a saved version of a document"),
         description = "Read the full content of one snapshot from a document's history. Get version names from list_versions. To restore it, write the content back with write_document."
     )]
     async fn read_version(&self, Parameters(p): Parameters<ReadVersionParams>) -> CallToolResult {
@@ -284,6 +290,7 @@ impl InkyMcp {
 
     #[tool(
         name = "rename_document",
+        annotations(title = "Rename an Inky document"),
         description = "Rename a document in place (comments follow the document). new_name keeps the original extension if none is given."
     )]
     async fn rename_document(&self, Parameters(p): Parameters<RenameParams>) -> CallToolResult {
@@ -299,6 +306,7 @@ impl InkyMcp {
 
     #[tool(
         name = "move_document",
+        annotations(title = "Move an Inky document"),
         description = "Move a document into another folder of the library (folders are created if missing; comments follow the document)."
     )]
     async fn move_document(&self, Parameters(p): Parameters<MoveParams>) -> CallToolResult {
@@ -312,6 +320,7 @@ impl InkyMcp {
 
     #[tool(
         name = "create_folder",
+        annotations(title = "Create a folder in the Inky library"),
         description = "Create a folder (and any missing parents) inside the Inky library."
     )]
     async fn create_folder(&self, Parameters(p): Parameters<FolderParams>) -> CallToolResult {
@@ -320,6 +329,7 @@ impl InkyMcp {
 
     #[tool(
         name = "delete_document",
+        annotations(title = "Delete an Inky document"),
         description = "Delete a single document from the Inky library. Folders cannot be deleted."
     )]
     async fn delete_document(&self, Parameters(p): Parameters<PathParams>) -> CallToolResult {
@@ -327,6 +337,9 @@ impl InkyMcp {
             Ok(a) => a,
             Err(e) => return reply(Err(e)),
         };
+        if !abs.exists() {
+            return reply(Err(format!("{} does not exist", p.path)));
+        }
         if !abs.is_file() || !library::is_doc(&abs) {
             return reply(Err("Only documents can be deleted".into()));
         }
@@ -335,6 +348,7 @@ impl InkyMcp {
 
     #[tool(
         name = "search_documents",
+        annotations(title = "Search Inky documents"),
         description = "Case-insensitive full-text search across every document in the Inky library. Returns matching lines with their document path and line number."
     )]
     async fn search_documents(&self, Parameters(p): Parameters<SearchParams>) -> CallToolResult {
@@ -358,6 +372,7 @@ impl InkyMcp {
 
     #[tool(
         name = "list_comments",
+        annotations(title = "List a document's comment threads"),
         description = "List the comment threads on an Inky document (the user's questions and notes, Google-Docs style). Each thread has an id, a quoted text anchor, open/resolved status, and messages. Threads marked open usually need an answer."
     )]
     async fn list_comments(&self, Parameters(p): Parameters<ListCommentsParams>) -> CallToolResult {
@@ -385,6 +400,7 @@ impl InkyMcp {
 
     #[tool(
         name = "create_comment",
+        annotations(title = "Comment on a document"),
         description = "Start a new comment thread on an Inky document, anchored to an exact quote from the document's text. The quote must appear verbatim in the document. Use this to leave feedback, questions, or suggestions the user will see highlighted in Inky."
     )]
     async fn create_comment(&self, Parameters(p): Parameters<CreateCommentParams>) -> CallToolResult {
@@ -429,6 +445,7 @@ impl InkyMcp {
 
     #[tool(
         name = "reply_to_comment",
+        annotations(title = "Reply to a comment thread"),
         description = "Add a reply to an existing comment thread on an Inky document. Use list_comments first to get thread ids. The user sees replies in Inky's comments panel."
     )]
     async fn reply_to_comment(&self, Parameters(p): Parameters<ReplyParams>) -> CallToolResult {
@@ -451,6 +468,7 @@ impl InkyMcp {
 
     #[tool(
         name = "resolve_comment",
+        annotations(title = "Resolve or reopen a comment thread"),
         description = "Mark a comment thread on an Inky document as resolved (or reopen it). Only resolve a thread after actually addressing it — e.g. after replying or updating the document."
     )]
     async fn resolve_comment(&self, Parameters(p): Parameters<ResolveParams>) -> CallToolResult {
@@ -528,7 +546,7 @@ impl ServerHandler for InkyMcp {
                 .ok_or_else(|| McpError::resource_not_found(format!("unknown resource {}", request.uri), None))?;
             let text = self
                 .lib
-                .read(rel)
+                .read(&percent_decode(rel))
                 .map_err(|e| McpError::resource_not_found(e, None))?;
             let mut contents = ResourceContents::text(text, request.uri.clone());
             if let ResourceContents::TextResourceContents { mime_type, .. } = &mut contents {
@@ -537,6 +555,29 @@ impl ServerHandler for InkyMcp {
             Ok(ReadResourceResult::new(vec![contents]).into())
         }
     }
+}
+
+/// Undo `%XX` escapes a client may apply to a resource URI before reading it.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 // --- transports -------------------------------------------------------------
@@ -552,7 +593,7 @@ pub fn serve_stdio_blocking() -> i32 {
             return 1;
         }
     };
-    rt.block_on(async {
+    let code = rt.block_on(async {
         let lib = match Library::from_env() {
             Ok(lib) => lib,
             Err(e) => {
@@ -577,7 +618,11 @@ pub fn serve_stdio_blocking() -> i32 {
                 1
             }
         }
-    })
+    });
+    // Don't wait for the blocking stdin reader: a client that keeps the pipe
+    // open after the session ends would otherwise hang us on runtime drop.
+    rt.shutdown_background();
+    code
 }
 
 /// A running app-hosted HTTP server. Dropping the handle does not stop it; call `stop()`.
@@ -617,7 +662,9 @@ pub async fn serve_http(lib: Library, port: u16) -> Result<HttpHandle, String> {
     let service = StreamableHttpService::new(
         move || Ok(InkyMcp::new(lib.clone())),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_cancellation_token(token.child_token()),
+        StreamableHttpServerConfig::default()
+            .with_legacy_session_mode(false)
+            .with_cancellation_token(token.child_token()),
     );
     let router = axum::Router::new().nest_service("/mcp", service);
     let shutdown = token.clone();
@@ -873,6 +920,25 @@ mod tests {
             .read_resource(ReadResourceRequestParams::new("inky://doc/../x"))
             .await
             .is_err());
+        f.lib.write("My notes.md", "spaced").unwrap();
+        let read = f
+            .client
+            .read_resource(ReadResourceRequestParams::new("inky://doc/My%20notes.md"))
+            .await
+            .unwrap();
+        let rmcp::model::ResourceContents::TextResourceContents { text, .. } = &read.contents[0] else {
+            panic!("expected text");
+        };
+        assert_eq!(text, "spaced");
+        f.server.abort();
+    }
+
+    #[tokio::test]
+    async fn tools_carry_titles() {
+        let f = fixture().await;
+        let tools = f.client.list_tools(None).await.unwrap();
+        let t = tools.tools.iter().find(|t| t.name == "list_documents").unwrap();
+        assert_eq!(t.annotations.as_ref().and_then(|a| a.title.as_deref()), Some("List Inky documents"));
         f.server.abort();
     }
 
