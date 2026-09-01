@@ -16,6 +16,7 @@
   import QuickOpen from "$lib/components/QuickOpen.svelte";
   import LibrarySearch from "$lib/components/LibrarySearch.svelte";
   import HistoryPanel from "$lib/components/HistoryPanel.svelte";
+  import McpSetupDialog from "$lib/components/McpSetupDialog.svelte";
   import * as Resizable from "$lib/components/ui/resizable/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import FilePlus from "@lucide/svelte/icons/file-plus-2";
@@ -290,3 +291,4 @@
 <QuickOpen />
 <LibrarySearch />
 <HistoryPanel />
+<McpSetupDialog />

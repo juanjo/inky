@@ -67,6 +67,7 @@ class AppState {
   pendingSearchQuery: string | null = null;
   /** URL of the app-hosted MCP server while it's running. */
   mcpUrl = $state<string | null>(null);
+  mcpSetupOpen = $state(false);
 
   /** Disk mtime of the open document at last read/write (conflict detection). */
   #docMtime: number | null = null;
@@ -194,16 +195,17 @@ class AppState {
       if (announce) {
         toast.success(`MCP server running at ${url}`, {
           duration: 12000,
-          action: {
-            label: "Copy setup command",
-            onClick: () => writeText(`claude mcp add --transport http inky ${url}`),
-          },
+          action: { label: "Connect an agent…", onClick: () => (this.mcpSetupOpen = true) },
         });
       }
     } catch (e) {
       this.mcpUrl = null;
       toast.error(`Could not start MCP server: ${e}`);
     }
+  }
+
+  openMcpSetup() {
+    this.mcpSetupOpen = true;
   }
 
   async toggleMcpServer() {

@@ -351,6 +351,10 @@
             size="sm"
             class="h-7 gap-1.5 px-2 text-xs font-medium text-muted-foreground"
             onclick={() => app.toggleMcpServer()}
+            oncontextmenu={(e) => {
+              e.preventDefault();
+              app.openMcpSetup();
+            }}
           >
             <span
               class="size-2 rounded-full {app.mcpUrl
@@ -363,8 +367,8 @@
       </Tooltip.Trigger>
       <Tooltip.Content>
         {app.mcpUrl
-          ? `MCP server live at ${app.mcpUrl} — click to stop`
-          : "MCP server off — click to start"}
+          ? `MCP server live at ${app.mcpUrl} — click to stop, right-click to connect an agent`
+          : "MCP server off — click to start, right-click to connect an agent"}
       </Tooltip.Content>
     </Tooltip.Root>
 
