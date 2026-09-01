@@ -9,7 +9,6 @@
     extractBlocks,
     type SourceBlock,
   } from "$lib/markdown";
-  import Pencil from "@lucide/svelte/icons/pencil";
   import { registerScroller } from "$lib/scrollsync";
   import { wrapQuote, unwrapMarks, contextAround } from "$lib/comments";
   import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
@@ -141,7 +140,6 @@
 
   // --- in-place block editing (reading mode) --------------------------------
   let blockEditing = $state(false);
-  let pencil = $state<{ el: HTMLElement; block: SourceBlock; x: number; y: number } | null>(null);
   let blockMap = new WeakMap<Element, SourceBlock>();
 
   function normalizeText(s: string): string {
@@ -185,31 +183,49 @@
     }
   }
 
-  function onBlockHover(e: MouseEvent) {
-    if (app.viewMode !== "preview" || blockEditing || !container || !scroller) return;
-    let el = e.target as HTMLElement | null;
+  /** A plain click on a mapped block swaps it for an inline markdown editor. */
+  function maybeStartBlockEdit(e: MouseEvent): boolean {
+    if (app.viewMode !== "preview" || blockEditing || !container) return false;
+    const target = e.target as HTMLElement;
+    // Leave links, comment highlights, form controls and diagrams alone.
+    if (target.closest("a, mark.comment-hl, input, textarea, svg, .mermaid-block")) return false;
+    if (!window.getSelection()?.isCollapsed) return false;
+    let el = target as HTMLElement | null;
     while (el && el.parentElement !== container) el = el.parentElement;
-    const block = el ? blockMap.get(el) : undefined;
-    if (el && block) {
-      const rect = el.getBoundingClientRect();
-      const srect = scroller.getBoundingClientRect();
-      pencil = {
-        el,
-        block,
-        x: Math.max(2, rect.left - srect.left - 30),
-        y: rect.top - srect.top + scroller.scrollTop + 2,
-      };
-    } else if (!(e.target as HTMLElement).closest?.(".block-pencil")) {
-      pencil = null;
-    }
+    if (!el) return false;
+    const block = blockMap.get(el);
+    if (!block) return false;
+    startBlockEdit(el, block, e);
+    return true;
   }
 
-  function startBlockEdit() {
-    if (!pencil || blockEditing) return;
-    const { el, block } = pencil;
-    pencil = null;
+  function startBlockEdit(el: HTMLElement, block: SourceBlock, e: MouseEvent) {
     blockEditing = true;
     const original = app.content.slice(block.start, block.end);
+
+    // Land the caret near the click: match the rendered text just before the
+    // click point back into the raw source, falling back to a proportional
+    // position.
+    let caret = original.length;
+    try {
+      const point = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (point && el.contains(point.startContainer)) {
+        const pre = document.createRange();
+        pre.selectNodeContents(el);
+        pre.setEnd(point.startContainer, point.startOffset);
+        const preText = pre.toString();
+        const needle = preText.slice(-24);
+        const idx = needle ? original.indexOf(needle) : -1;
+        if (idx >= 0) {
+          caret = idx + needle.length;
+        } else {
+          const total = Math.max(1, el.textContent?.length ?? 1);
+          caret = Math.min(original.length, Math.round((preText.length / total) * original.length));
+        }
+      }
+    } catch {
+      // caretRangeFromPoint unavailable; keep caret at the end.
+    }
 
     const ta = document.createElement("textarea");
     ta.value = original;
@@ -251,7 +267,7 @@
     requestAnimationFrame(() => {
       resize();
       ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.setSelectionRange(caret, caret);
     });
   }
 
@@ -384,7 +400,9 @@
     if (anchor?.href && /^https?:/.test(anchor.href)) {
       event.preventDefault();
       import("@tauri-apps/plugin-opener").then(({ openUrl }) => openUrl(anchor.href));
+      return;
     }
+    maybeStartBlockEdit(event);
   }
 </script>
 
@@ -396,11 +414,7 @@
   onscroll={onScroll}
   onmouseup={onMouseUp}
   onmouseover={onHover}
-  onmousemove={onBlockHover}
-  onmouseleave={() => {
-    hoverCard = null;
-    pencil = null;
-  }}
+  onmouseleave={() => (hoverCard = null)}
 >
   <div class="prose-doc" bind:this={container}>
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify -->
@@ -421,16 +435,5 @@
   {/if}
   {#if hoverThread && hoverCard}
     <CommentHoverCard thread={hoverThread} x={hoverCard.x} y={hoverCard.y} />
-  {/if}
-  {#if pencil && !blockEditing}
-    <button
-      class="block-pencil no-print absolute z-10 flex size-6 items-center justify-center rounded-md border bg-popover text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-foreground"
-      style="left: {pencil.x}px; top: {pencil.y}px"
-      title="Edit this block (Esc to cancel, ⌘↩ or click away to apply)"
-      onmousedown={(e) => e.preventDefault()}
-      onclick={startBlockEdit}
-    >
-      <Pencil class="size-3.5" />
-    </button>
   {/if}
 </div>
