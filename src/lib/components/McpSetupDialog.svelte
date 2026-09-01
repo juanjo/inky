@@ -44,7 +44,7 @@
 </script>
 
 <Dialog.Root bind:open={app.mcpSetupOpen}>
-  <Dialog.Content class="sm:max-w-xl">
+  <Dialog.Content class="sm:max-w-2xl">
     <Dialog.Header>
       <Dialog.Title>Connect an agent</Dialog.Title>
       <Dialog.Description>
@@ -52,11 +52,11 @@
         install. Pick your client:
       </Dialog.Description>
     </Dialog.Header>
-    <div class="flex flex-col gap-4">
+    <div class="flex min-w-0 flex-col gap-4">
       {#each snippets as s (s.title)}
-        <div class="flex flex-col gap-1.5">
+        <div class="flex min-w-0 flex-col gap-1.5">
           <div class="flex items-center justify-between gap-2">
-            <span class="text-sm font-medium">{s.title}</span>
+            <span class="min-w-0 text-sm font-medium">{s.title}</span>
             <Button
               variant="ghost"
               size="sm"
@@ -66,7 +66,9 @@
               <Copy class="size-3.5" /> Copy
             </Button>
           </div>
-          <pre class="overflow-x-auto rounded-md bg-muted px-3 py-2 text-xs"><code>{s.code}</code></pre>
+          <pre
+            class="min-w-0 whitespace-pre-wrap break-all rounded-md bg-muted px-3 py-2 font-mono text-xs"
+          ><code>{s.code}</code></pre>
         </div>
       {/each}
       <p class="text-xs text-muted-foreground">
