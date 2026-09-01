@@ -79,8 +79,10 @@ Tauri 2, Svelte 5, Tailwind CSS 4 and shadcn-svelte.
   themes, text width, font size and view toggles with standard shortcuts.
 - **Auto-updates** — checks on launch and via *Inky → Check for Updates…*
   (see below).
-- **MCP server** — agents can read and write your library (see below). Start
-  it from the toolbar's red/green **MCP** status light (no terminal needed).
+- **MCP server** — agents can read and write your library through Inky's
+  built-in MCP server (see below). Nothing to install: toggle it from the
+  toolbar's red/green **MCP** status light, or point stdio clients at
+  `Inky --mcp`.
 - **Safety & history** — unsaved changes are flushed on window blur, close,
   and ⌘Q; every content-changing overwrite keeps the previous version in a
   hidden `.inky-history/` folder next to the document (max one per 10
@@ -107,12 +109,12 @@ Common actions live in the Makefile — run `make` (or `make help`) to list them
 | Target | What it does |
 | --- | --- |
 | `make dev` | Run the app with hot reload |
-| `make check` | Type-check frontend + Rust |
+| `make check` | Type-check frontend + Rust, run the Rust tests |
 | `make dmg` | Build the signed `.app`, `.dmg` and updater artifacts |
 | `make release` | `make dmg` + assemble `dist/release/` ready for a GitHub release (incl. `latest.json`) |
 | `make icons` | Regenerate all app icons from `assets/icon.svg` |
 | `make open` | Open the last built release app |
-| `make mcp` | Run the MCP server on stdio |
+| `make mcp` | Run the MCP server on stdio (dev build) |
 | `make clean` | Remove build outputs |
 
 Builds are signed with `~/.tauri/inky.key` (override with `make dmg KEY=…`);
@@ -152,36 +154,56 @@ you can't ship updates to existing installs.
 
 ## MCP server (let agents use your library)
 
-`mcp/server.mjs` is a stdio MCP server exposing the Inky library to agents:
-`list_documents`, `read_document`, `write_document`, `create_folder`,
-`delete_document`, `search_documents` — plus comment tools (`list_comments`,
-`create_comment`, `reply_to_comment`, `resolve_comment`) so agents can answer
-and resolve the comment threads you leave on documents, and history tools
-(`list_versions`, `read_version`) so they can report what changed or recover
-earlier text. It resolves the library folder from
-`INKY_LIBRARY`, then the app's own config
-(`~/Library/Application Support/com.inky.app/config.json`), then
-`~/Documents/Inky` — so the app and agents always see the same documents.
-The app refreshes its sidebar on focus, so agent-created documents just show up.
+Inky ships an MCP server inside the app binary — no Node.js or other runtime
+needed. It exposes `list_documents`, `read_document`, `write_document`,
+`patch_document`, `rename_document`, `move_document`, `create_folder`,
+`delete_document`, `search_documents`, history tools (`list_versions`,
+`read_version`) and comment tools (`list_comments`, `create_comment`,
+`reply_to_comment`, `resolve_comment`), plus every document as an
+`inky://doc/…` resource. The library folder is resolved from `INKY_LIBRARY`,
+then the app's config (`~/Library/Application Support/com.inky.app/config.json`),
+then `~/Documents/Inky` — so the app and agents always see the same documents.
+The app refreshes on focus, so agent-created documents just show up.
 
-This repo ships a project-scoped `.mcp.json`, so Claude Code sessions opened
-here get it automatically. To register it globally:
+Two ways to connect (right-click the toolbar's **MCP** light for copyable,
+pre-filled snippets):
 
-```sh
-claude mcp add --scope user inky -- node /path/to/inky/mcp/server.mjs
-```
-
-The server also has an HTTP mode (`--http [port]`), which is what the
-toolbar's **MCP** status light runs (a bundled copy on port 26317; green =
-live, red = off, click to toggle; it restarts automatically on the next
-launch until you stop it). Register that one with:
+**HTTP** — the toolbar light runs a streamable-HTTP server on
+`http://127.0.0.1:26317/mcp` while the app is open (green = live; it
+restarts on the next launch until you stop it):
 
 ```sh
 claude mcp add --transport http inky http://127.0.0.1:26317/mcp
 ```
 
-Then ask an agent things like *"write yesterday's meeting notes into my Inky
-library under Meetings/"* or *"read my Inky doc 'Ideas' and summarize it"*.
+**stdio** — any client that takes a `command` can launch the binary directly,
+even when Inky isn't running:
+
+```sh
+claude mcp add inky -- "/Applications/Inky.app/Contents/MacOS/Inky" --mcp
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{ "mcpServers": { "inky": { "command": "/Applications/Inky.app/Contents/MacOS/Inky", "args": ["--mcp"] } } }
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.inky]
+command = "/Applications/Inky.app/Contents/MacOS/Inky"
+args = ["--mcp"]
+```
+
+ChatGPT's connectors only accept public HTTPS URLs, so they can't reach a
+server on your Mac; Inky doesn't support ChatGPT.
+
+This repo's `.mcp.json` registers the HTTP server, so Claude Code sessions
+opened here use the running app. Then ask an agent things like *"write
+yesterday's meeting notes into my Inky library under Meetings/"* or *"read my
+Inky doc 'Ideas' and summarize it"*.
 
 ## Keyboard shortcuts
 
