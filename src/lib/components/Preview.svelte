@@ -162,7 +162,56 @@
 
   // --- in-place block editing (reading mode) --------------------------------
   let blockEditing = $state(false);
-  let blockMap = new WeakMap<Element, SourceBlock>();
+  let blockMap = new Map<Element, SourceBlock>();
+
+  /** Keep other blocks' source offsets valid after an edit changes lengths. */
+  function shiftBlocks(after: number, delta: number) {
+    if (!delta) return;
+    for (const b of blockMap.values()) {
+      if (b.start >= after) {
+        b.start += delta;
+        b.end += delta;
+      }
+    }
+  }
+
+  type CaretHint = MouseEvent | "start" | "end";
+
+  function openBlockForEdit(el: HTMLElement, block: SourceBlock, caret: CaretHint) {
+    if (el.tagName === "PRE" || el.querySelector("pre, .katex, sup a")) {
+      startRawBlockEdit(el, block, caret === "end" ? "end" : "start");
+    } else {
+      startRichBlockEdit(el, block, caret);
+    }
+  }
+
+  /** After leaving a block with ↑/↓, continue editing the adjacent one. */
+  function navigateToSibling(fromEl: Element | null, dir: 1 | -1) {
+    if (!fromEl) return;
+    let el = dir === 1 ? fromEl.nextElementSibling : fromEl.previousElementSibling;
+    while (el && !blockMap.has(el)) {
+      el = dir === 1 ? el.nextElementSibling : el.previousElementSibling;
+    }
+    if (!el) return;
+    const block = blockMap.get(el)!;
+    const target = el as HTMLElement;
+    requestAnimationFrame(() => openBlockForEdit(target, block, dir === 1 ? "start" : "end"));
+  }
+
+  /** Is the caret on the first (dir -1) or last (dir 1) visual line? */
+  function caretAtBoundary(wrapper: HTMLElement, dir: 1 | -1): boolean {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount || !sel.isCollapsed) return false;
+    const range = sel.getRangeAt(0).cloneRange();
+    const rects = range.getClientRects();
+    const cr = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+    if (!cr || (cr.width === 0 && cr.height === 0)) return true;
+    const wr = wrapper.getBoundingClientRect();
+    const lineHeight = cr.height || 20;
+    return dir === 1
+      ? wr.bottom - cr.bottom < lineHeight * 0.7
+      : cr.top - wr.top < lineHeight * 0.7;
+  }
 
   function normalizeText(s: string): string {
     return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
@@ -185,7 +234,7 @@
    * math, mermaid, reference defs) simply don't get an edit affordance.
    */
   function computeBlockMap() {
-    blockMap = new WeakMap();
+    blockMap = new Map();
     if (!container || app.isMermaidDoc) return;
     const blocks = extractBlocks(app.content);
     let bi = 0;
@@ -218,13 +267,7 @@
     if (!el) return false;
     const block = blockMap.get(el);
     if (!block) return false;
-    // Blocks whose rendering can't round-trip through HTML→markdown (code
-    // fences, math, footnote refs) get the plain source editor instead.
-    if (el.tagName === "PRE" || el.querySelector("pre, .katex, sup a")) {
-      startRawBlockEdit(el, block);
-    } else {
-      startRichBlockEdit(el, block, e);
-    }
+    openBlockForEdit(el, block, e);
     return true;
   }
 
@@ -261,6 +304,18 @@
       } else if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
         ev.preventDefault();
         finishRichEdit(true);
+      } else if (
+        (ev.key === "ArrowDown" || ev.key === "ArrowUp") &&
+        !ev.shiftKey &&
+        !ev.metaKey &&
+        !ev.altKey
+      ) {
+        const dir = ev.key === "ArrowDown" ? 1 : -1;
+        if (caretAtBoundary(wrapper, dir)) {
+          ev.preventDefault();
+          const from = finishRichEdit(true);
+          navigateToSibling(from, dir);
+        }
       }
       ev.stopPropagation();
     });
@@ -270,7 +325,7 @@
     return wrapper;
   }
 
-  function startRichBlockEdit(el: HTMLElement, block: SourceBlock, e: MouseEvent) {
+  function startRichBlockEdit(el: HTMLElement, block: SourceBlock, caret: CaretHint) {
     blockEditing = true;
     richBlock = block;
     richInsert = false;
@@ -278,16 +333,24 @@
     richOriginalHtml = el.outerHTML;
     const wrapper = mountRichWrapper(el);
 
-    const { clientX, clientY } = e;
+    const point = caret instanceof MouseEvent ? { x: caret.clientX, y: caret.clientY } : caret;
     requestAnimationFrame(() => {
       wrapper.focus();
+      const sel = window.getSelection();
       try {
-        const point = document.caretRangeFromPoint(clientX, clientY);
-        if (point && wrapper.contains(point.startContainer)) {
-          const sel = window.getSelection();
-          sel?.removeAllRanges();
-          sel?.addRange(point);
+        if (typeof point === "object") {
+          const range = document.caretRangeFromPoint(point.x, point.y);
+          if (range && wrapper.contains(range.startContainer)) {
+            sel?.removeAllRanges();
+            sel?.addRange(range);
+            return;
+          }
         }
+        const range = document.createRange();
+        range.selectNodeContents(wrapper);
+        range.collapse(point === "start");
+        sel?.removeAllRanges();
+        sel?.addRange(range);
       } catch {
         // keep default caret
       }
@@ -347,10 +410,10 @@
     return true;
   }
 
-  function finishRichEdit(commit: boolean) {
+  function finishRichEdit(commit: boolean): Element | null {
     const wrapper = richWrapper;
     const block = richBlock;
-    if (!wrapper || !block) return;
+    if (!wrapper || !block) return null;
     const isInsert = richInsert;
     const { lead, tail } = richSeps;
     richWrapper = null;
@@ -360,24 +423,42 @@
     richBar = null;
     blockEditing = false;
     const html = wrapper.innerHTML;
-    if (isInsert) wrapper.remove();
-    else wrapper.outerHTML = richOriginalHtml;
-    if (!commit) return;
+    let restored: Element | null = null;
+    if (isInsert) {
+      const anchor = wrapper.previousElementSibling ?? wrapper.nextElementSibling;
+      wrapper.remove();
+      restored = anchor;
+    } else {
+      const holder = document.createElement("div");
+      holder.innerHTML = richOriginalHtml;
+      restored = holder.firstElementChild;
+      if (restored) wrapper.replaceWith(restored);
+      else wrapper.remove();
+    }
+    if (!commit) {
+      if (restored && !isInsert) blockMap.set(restored, block);
+      return restored;
+    }
     const md = htmlToMarkdown(html).trim();
     if (isInsert) {
-      if (!md) return;
-      blockMap = new WeakMap();
-      app.content = app.content.slice(0, block.start) + lead + md + tail + app.content.slice(block.end);
-      app.scheduleAutosave();
-      return;
+      if (md) {
+        const inserted = lead + md + tail;
+        shiftBlocks(block.start, inserted.length);
+        app.content = app.content.slice(0, block.start) + inserted + app.content.slice(block.end);
+        app.scheduleAutosave();
+      }
+      return restored;
     }
     const original = app.content.slice(block.start, block.end);
     if (md && md !== original.trim()) {
-      // Offsets of later blocks just shifted; drop the map until re-render.
-      blockMap = new WeakMap();
+      shiftBlocks(block.end, md.length - (block.end - block.start));
+      if (restored) blockMap.set(restored, { start: block.start, end: block.start + md.length });
       app.content = app.content.slice(0, block.start) + md + app.content.slice(block.end);
       app.scheduleAutosave();
+    } else if (restored) {
+      blockMap.set(restored, block);
     }
+    return restored;
   }
 
   /** Toolbar actions for the rich editor (mousedown is prevented, so the
@@ -430,7 +511,7 @@
   // --- raw source path (code fences, math, footnotes) ------------------------
   // A small embedded CodeMirror: real editing behavior (Enter, undo, indent)
   // plus syntax coloring in the fence's language.
-  function startRawBlockEdit(el: HTMLElement, block: SourceBlock) {
+  function startRawBlockEdit(el: HTMLElement, block: SourceBlock, caret: "start" | "end" = "start") {
     blockEditing = true;
     const original = app.content.slice(block.start, block.end);
     // For code blocks, edit only the code — keep the fence lines out of view.
@@ -467,7 +548,8 @@
       host.remove();
       el.style.display = "";
       if (commit && value !== original) {
-        blockMap = new WeakMap();
+        shiftBlocks(block.end, value.length - (block.end - block.start));
+        blockMap.set(el, { start: block.start, end: block.start + value.length });
         app.content = app.content.slice(0, block.start) + value + app.content.slice(block.end);
         app.scheduleAutosave();
       }
@@ -483,6 +565,26 @@
         cmKeymap.of([
           { key: "Escape", run: () => (finish(false), true) },
           { key: "Mod-Enter", run: () => (finish(true), true) },
+          {
+            key: "ArrowDown",
+            run: (v) => {
+              const line = v.state.doc.lineAt(v.state.selection.main.head);
+              if (line.number !== v.state.doc.lines) return false;
+              finish(true);
+              navigateToSibling(el, 1);
+              return true;
+            },
+          },
+          {
+            key: "ArrowUp",
+            run: (v) => {
+              const line = v.state.doc.lineAt(v.state.selection.main.head);
+              if (line.number !== 1) return false;
+              finish(true);
+              navigateToSibling(el, -1);
+              return true;
+            },
+          },
           ...defaultKeymap,
           ...historyKeymap,
           indentWithTab,
@@ -500,7 +602,12 @@
         if (!done) view?.dispatch({ effects: StateEffect.appendConfig.of(support) });
       });
     }
-    requestAnimationFrame(() => view?.focus());
+    requestAnimationFrame(() => {
+      if (!view) return;
+      const pos = caret === "end" ? view.state.doc.length : 0;
+      view.dispatch({ selection: { anchor: pos } });
+      view.focus();
+    });
   }
 
   // --- hover preview of comment threads ------------------------------------
