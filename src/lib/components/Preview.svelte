@@ -101,10 +101,12 @@
     if (!container) return;
     tick().then(async () => {
       if (container) {
+        // Map blocks first so editing works immediately, even while mermaid
+        // is still loading/rendering diagrams.
+        computeBlockMap();
         await renderMermaidBlocks(container, theme);
         resolveLocalImages();
         applyCommentHighlights();
-        computeBlockMap();
       }
     });
   });
@@ -241,7 +243,7 @@
     for (const el of container.children) {
       const elNorm = normalizeText(el.textContent ?? "").slice(0, 32);
       if (!elNorm) continue;
-      for (let j = bi; j < Math.min(bi + 3, blocks.length); j++) {
+      for (let j = bi; j < Math.min(bi + 6, blocks.length); j++) {
         const raw = app.content.slice(blocks[j].start, blocks[j].end);
         const bNorm = normalizeText(stripMdSyntax(raw)).slice(0, 32);
         if (!bNorm) continue;
@@ -354,6 +356,63 @@
       } catch {
         // keep default caret
       }
+    });
+  }
+
+  /**
+   * Editor-style keyboard behavior on a static selection: selecting text and
+   * pressing Backspace/Delete (or typing) enters edit mode on that block,
+   * restores the selection, and applies the key.
+   */
+  function onGlobalKeydown(e: KeyboardEvent) {
+    if (app.viewMode !== "preview" || blockEditing || app.isMermaidDoc || !container) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const isDelete = e.key === "Backspace" || e.key === "Delete";
+    if (!isDelete && e.key.length !== 1) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (
+      active instanceof HTMLInputElement ||
+      active instanceof HTMLTextAreaElement ||
+      active?.isContentEditable
+    ) {
+      return;
+    }
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) return;
+    let el: HTMLElement | null =
+      range.commonAncestorContainer instanceof HTMLElement
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+    while (el && el.parentElement !== container) el = el.parentElement;
+    if (!el) return;
+    const block = blockMap.get(el);
+    if (!block || el.tagName === "PRE" || el.querySelector("pre, .katex, sup a")) return;
+
+    e.preventDefault();
+    const saved = {
+      sc: range.startContainer,
+      so: range.startOffset,
+      ec: range.endContainer,
+      eo: range.endOffset,
+    };
+    const key = e.key;
+    startRichBlockEdit(el, block, "start");
+    // Runs after startRichBlockEdit's own rAF placed its default caret.
+    requestAnimationFrame(() => {
+      try {
+        const r = document.createRange();
+        r.setStart(saved.sc, saved.so);
+        r.setEnd(saved.ec, saved.eo);
+        const s = window.getSelection();
+        s?.removeAllRanges();
+        s?.addRange(r);
+      } catch {
+        return; // selection nodes gone; leave caret as placed
+      }
+      if (isDelete) document.execCommand("delete");
+      else document.execCommand("insertText", false, key);
     });
   }
 
@@ -786,6 +845,8 @@
     });
   }
 </script>
+
+<svelte:window onkeydown={onGlobalKeydown} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_mouse_events_have_key_events -->
 <div
