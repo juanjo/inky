@@ -34,3 +34,6 @@ jobs:
 
       - run: cargo check
         working-directory: src-tauri
+
+      - run: cargo test
+        working-directory: src-tauri

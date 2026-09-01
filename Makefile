@@ -12,9 +12,9 @@ help: ## Show available targets
 dev: ## Run the app in development mode (hot reload)
 	pnpm tauri dev
 
-check: ## Type-check the frontend and the Rust backend
+check: ## Type-check the frontend, then check and test the Rust backend
 	pnpm check
-	cd src-tauri && cargo check
+	cd src-tauri && cargo check && cargo test
 
 dmg: ## Build the signed .app, .dmg and updater artifacts
 	TAURI_SIGNING_PRIVATE_KEY=$(KEY) TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" pnpm tauri build
@@ -35,8 +35,8 @@ icons: ## Regenerate all app icons from assets/icon.svg (transparent bg)
 open: ## Open the last built release app
 	open $(BUNDLE_DIR)/macos/Inky.app
 
-mcp: ## Run the MCP server on stdio (for manual testing)
-	node mcp/server.mjs
+mcp: ## Run the MCP server on stdio (dev build, for manual testing)
+	cargo run --manifest-path src-tauri/Cargo.toml -- --mcp
 
 clean: ## Remove frontend and bundle build outputs
 	rm -rf build dist $(BUNDLE_DIR)

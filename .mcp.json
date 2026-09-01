@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "inky": {
-      "command": "node",
-      "args": ["mcp/server.mjs"]
+      "type": "http",
+      "url": "http://127.0.0.1:26317/mcp"
     }
   }
 }

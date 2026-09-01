@@ -1,7 +1,7 @@
 {
   "name": "inky",
   "version": "0.1.0",
-  "description": "Inky — a pleasant markdown reader and editor",
+  "description": "Inky \u2014 a pleasant markdown reader and editor",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -10,9 +10,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "mcp": "node mcp/server.mjs",
     "bundle": "TAURI_SIGNING_PRIVATE_KEY=$HOME/.tauri/inky.key TAURI_SIGNING_PRIVATE_KEY_PASSWORD=\"\" tauri build",
-    "mcp:bundle": "esbuild mcp/server.mjs --bundle --platform=node --format=esm --minify --outfile=mcp/server.bundle.mjs --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
     "test": "vitest run"
   },
   "license": "MIT",
@@ -24,7 +22,6 @@
     "@codemirror/state": "^6.7.2",
     "@codemirror/view": "^6.43.10",
     "@lezer/highlight": "^1.2.3",
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.3",
@@ -46,8 +43,7 @@
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
     "turndown": "^7.2.4",
-    "turndown-plugin-gfm": "^1.0.2",
-    "zod": "^4.5.4"
+    "turndown-plugin-gfm": "^1.0.2"
   },
   "devDependencies": {
     "@internationalized/date": "^3.12.3",
@@ -59,7 +55,6 @@
     "@types/node": "^26.4.0",
     "@types/turndown": "^5.0.6",
     "bits-ui": "^2.19.0",
-    "esbuild": "^0.28.2",
     "jsdom": "^30.0.1",
     "mode-watcher": "^1.1.0",
     "paneforge": "^1.0.2",
@@ -70,8 +65,5 @@
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vitest": "^4.1.11"
-  },
-  "bin": {
-    "inky-mcp": "mcp/server.mjs"
   }
 }
