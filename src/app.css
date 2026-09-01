@@ -7,6 +7,8 @@
 /* ---------------------------------- */
 
 :root {
+  /* Native scrollbars and form controls follow the theme. */
+  color-scheme: light;
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.141 0.005 285.823);
@@ -54,6 +56,7 @@
 
 /* Anthracite: warm dark gray, never pure black */
 .dark {
+  color-scheme: dark;
   --background: oklch(0.245 0.006 264);
   --foreground: oklch(0.95 0.004 264);
   --card: oklch(0.285 0.006 264);
@@ -93,6 +96,7 @@
 
 /* Book mode: warm paper, serif reading typography */
 .book {
+  color-scheme: light;
   --background: oklch(0.955 0.018 84);
   --foreground: oklch(0.3 0.03 60);
   --card: oklch(0.97 0.014 84);

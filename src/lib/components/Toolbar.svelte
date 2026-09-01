@@ -21,6 +21,7 @@
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import TableOfContents from "@lucide/svelte/icons/table-of-contents";
   import MessageSquareText from "@lucide/svelte/icons/message-square-text";
+  import History from "@lucide/svelte/icons/history";
   import UnfoldVertical from "@lucide/svelte/icons/unfold-vertical";
   import Search from "@lucide/svelte/icons/search";
   import type { ViewMode } from "$lib/types";
@@ -179,6 +180,24 @@
         {/snippet}
       </Tooltip.Trigger>
       <Tooltip.Content>Comments (⌘⇧C)</Tooltip.Content>
+    </Tooltip.Root>
+
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        {#snippet child({ props })}
+          <Button
+            {...props}
+            variant="ghost"
+            size="icon"
+            class={app.historyVisible ? "bg-accent" : ""}
+            disabled={!app.currentPath}
+            onclick={() => (app.historyVisible = true)}
+          >
+            <History class="size-4" />
+          </Button>
+        {/snippet}
+      </Tooltip.Trigger>
+      <Tooltip.Content>Version history</Tooltip.Content>
     </Tooltip.Root>
 
     <Tooltip.Root>
