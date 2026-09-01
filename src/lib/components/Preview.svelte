@@ -52,7 +52,9 @@
     const src = app.content;
     const isMermaid = app.isMermaidDoc;
     app.currentPath;
-    // Hold re-renders while a block is being edited in place.
+    // Hold re-renders while a block is being edited in place (self-healing:
+    // a stuck lock without a live session must never freeze rendering).
+    healStuckSession();
     if (blockEditing) return;
     if (firstRender) {
       firstRender = false;
@@ -179,6 +181,18 @@
 
   type CaretHint = MouseEvent | "start" | "end";
 
+  /** Finisher of the active raw (CodeMirror) session, when one exists. */
+  let rawFinish: ((commit: boolean) => void) | null = null;
+
+  function sessionAlive(): boolean {
+    return richWrapper !== null || rawFinish !== null;
+  }
+
+  /** blockEditing can only be true while a session exists; repair otherwise. */
+  function healStuckSession() {
+    if (blockEditing && !sessionAlive()) blockEditing = false;
+  }
+
   function openBlockForEdit(el: HTMLElement, block: SourceBlock, caret: CaretHint) {
     if (el.tagName === "PRE" || el.querySelector("pre, .katex, sup a")) {
       startRawBlockEdit(el, block, caret === "end" ? "end" : "start");
@@ -258,6 +272,7 @@
 
   /** A plain click on a mapped block starts editing it in place. */
   function maybeStartBlockEdit(e: MouseEvent): boolean {
+    healStuckSession();
     if (app.viewMode !== "preview" || blockEditing || !container) return false;
     const target = e.target as HTMLElement;
     // Leave links, comment highlights, form controls and diagrams alone.
@@ -324,6 +339,19 @@
     wrapper.addEventListener("focusout", (ev) => {
       if (!wrapper.contains(ev.relatedTarget as Node | null)) finishRichEdit(true);
     });
+    // Watchdog: if focus never lands in the wrapper (focus races, fast
+    // clicks), no blur can end the session — retry once, then bail out so
+    // the editing lock can't stick.
+    setTimeout(() => {
+      if (richWrapper === wrapper && !wrapper.contains(document.activeElement)) {
+        wrapper.focus();
+        setTimeout(() => {
+          if (richWrapper === wrapper && !wrapper.contains(document.activeElement)) {
+            finishRichEdit(true);
+          }
+        }, 150);
+      }
+    }, 150);
     return wrapper;
   }
 
@@ -365,7 +393,17 @@
    * restores the selection, and applies the key.
    */
   function onGlobalKeydown(e: KeyboardEvent) {
-    if (app.viewMode !== "preview" || blockEditing || app.isMermaidDoc || !container) return;
+    if (app.viewMode !== "preview" || app.isMermaidDoc || !container) return;
+    healStuckSession();
+    // Rescue hatch: Escape always ends whatever editing session exists,
+    // even one that lost (or never got) focus.
+    if (e.key === "Escape" && blockEditing) {
+      if (richWrapper) finishRichEdit(false);
+      else rawFinish?.(false);
+      healStuckSession();
+      return;
+    }
+    if (blockEditing) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const isDelete = e.key === "Backspace" || e.key === "Delete";
     if (!isDelete && e.key.length !== 1) return;
@@ -418,6 +456,7 @@
 
   /** Clicking the gap between blocks starts a fresh paragraph there. */
   function maybeStartGapEdit(e: MouseEvent): boolean {
+    healStuckSession();
     if (app.viewMode !== "preview" || blockEditing || !container || app.isMermaidDoc) return false;
     const target = e.target as HTMLElement;
     if (target !== container && target !== scroller) return false;
@@ -601,6 +640,7 @@
     const finish = (commit: boolean) => {
       if (done || !view) return;
       done = true;
+      rawFinish = null;
       blockEditing = false;
       const value = prefix + view.state.doc.toString() + suffix;
       view.destroy();
@@ -661,12 +701,22 @@
         if (!done) view?.dispatch({ effects: StateEffect.appendConfig.of(support) });
       });
     }
+    rawFinish = finish;
     requestAnimationFrame(() => {
       if (!view) return;
       const pos = caret === "end" ? view.state.doc.length : 0;
       view.dispatch({ selection: { anchor: pos } });
       view.focus();
     });
+    // Watchdog mirror of the rich path: never leave a focusless session.
+    setTimeout(() => {
+      if (!done && view && !view.hasFocus) {
+        view.focus();
+        setTimeout(() => {
+          if (!done && view && !view.hasFocus) finish(true);
+        }, 150);
+      }
+    }, 150);
   }
 
   // --- hover preview of comment threads ------------------------------------
