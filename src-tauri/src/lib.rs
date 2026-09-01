@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
+pub mod library;
+
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
     library: Option<String>,
