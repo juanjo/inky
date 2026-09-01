@@ -290,6 +290,8 @@
     const original = app.content.slice(block.start, block.end);
     const md = htmlToMarkdown(html).trim();
     if (md && md !== original.trim()) {
+      // Offsets of later blocks just shifted; drop the map until re-render.
+      blockMap = new WeakMap();
       app.content = app.content.slice(0, block.start) + md + app.content.slice(block.end);
       app.scheduleAutosave();
     }
@@ -380,6 +382,7 @@
       ta.remove();
       el.style.display = "";
       if (commit && value !== original) {
+        blockMap = new WeakMap();
         app.content = app.content.slice(0, block.start) + value + app.content.slice(block.end);
         app.scheduleAutosave();
       }

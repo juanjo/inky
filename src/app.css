@@ -472,37 +472,29 @@
   font-weight: 600;
 }
 
-/* WYSIWYG block editing in reading mode */
-.prose-doc .rich-edit {
-  outline: 2px solid var(--ring);
-  border-radius: 8px;
-  padding: 0.35em 0.6em;
-  margin: 0.5em -0.6em;
-}
+/* WYSIWYG block editing in reading mode — deliberately invisible: the caret
+   and the floating format bar are the only signals that you're editing. */
+.prose-doc .rich-edit,
 .prose-doc .rich-edit:focus {
-  outline: 2px solid var(--ring);
-}
-.prose-doc .rich-edit > :first-child {
-  margin-top: 0;
-}
-.prose-doc .rich-edit > :last-child {
-  margin-bottom: 0;
+  outline: none;
+  caret-color: var(--foreground);
 }
 
-/* In-place block editing in reading mode */
+/* Plain-source block editing (code fences, math): styled like the rendered
+   code block so it reads as editing in place, not as a form field. */
 .prose-doc textarea.block-edit {
   display: block;
   width: 100%;
-  margin: 0.9em 0;
-  padding: 0.7em 0.85em;
-  border: none;
+  margin: 1.2em 0;
+  padding: 1em 1.2em;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  outline: 2px solid var(--ring);
-  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  outline: none;
+  background: var(--prose-code-bg);
   color: var(--foreground);
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
   font-size: 0.85em;
-  line-height: 1.6;
+  line-height: 1.55;
   resize: none;
   overflow: hidden;
 }
