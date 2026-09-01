@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 pub mod library;
+pub mod mcp;
 
 use library::{Config, Library, Node, SearchHit, VersionInfo};
 
