@@ -31,6 +31,9 @@ describe("task checkboxes", () => {
     expect(boxes[0]).not.toContain("disabled");
     expect(boxes[0]).not.toContain("checked");
     expect(boxes[1]).toContain("checked");
+    // The shadcn-style check icon must survive sanitization.
+    expect(html.match(/class="task-check"/g)).toHaveLength(2);
+    expect(html).toContain('class="task-box"');
   });
 });
 

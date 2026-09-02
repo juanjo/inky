@@ -43,15 +43,22 @@ turndown.addRule("inky-list-item", {
 });
 
 // Task-list checkboxes (wins over the gfm plugin's rule, avoiding doubles).
+// The preview renders them shadcn-style as <span class="task-box"><input…><svg…></span>;
+// matching the wrapper also swallows the check icon. Bare inputs in an <li>
+// (e.g. pasted HTML) keep working via the second condition.
+const isChecked = (input: Element | null) =>
+  !!input && ((input as HTMLInputElement).checked || input.hasAttribute("checked"));
 turndown.addRule("inky-task", {
   filter: (node) =>
-    node.nodeName === "INPUT" &&
-    node.getAttribute("type") === "checkbox" &&
-    node.parentNode?.nodeName === "LI",
-  replacement: (_content, node) =>
-    (node as HTMLInputElement).checked || (node as HTMLElement).hasAttribute("checked")
-      ? "[x] "
-      : "[ ] ",
+    (node.nodeName === "SPAN" && node.classList.contains("task-box")) ||
+    (node.nodeName === "INPUT" &&
+      node.getAttribute("type") === "checkbox" &&
+      node.parentNode?.nodeName === "LI"),
+  replacement: (_content, node) => {
+    const input =
+      node.nodeName === "INPUT" ? (node as Element) : (node as Element).querySelector("input");
+    return isChecked(input) ? "[x] " : "[ ] ";
+  },
 });
 
 // Local images are rewritten to asset: URLs for display; write the original

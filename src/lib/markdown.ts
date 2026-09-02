@@ -172,7 +172,13 @@ marked.use({
     },
     checkbox({ checked }) {
       // Enabled (marked emits `disabled`) so reading mode can toggle tasks.
-      return `<input type="checkbox" class="task-checkbox"${checked ? " checked" : ""}> `;
+      // Same structure as the shadcn checkbox: a styled box plus a check icon
+      // (the icon shows via CSS when the input is checked).
+      return (
+        `<span class="task-box"><input type="checkbox" class="task-checkbox"${checked ? " checked" : ""}>` +
+        `<svg class="task-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" ` +
+        `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg></span> `
+      );
     },
     listitem(item) {
       if (item.task) {

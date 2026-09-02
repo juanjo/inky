@@ -290,11 +290,53 @@
   margin-left: -1.6em;
   padding-left: 1.6em;
 }
-.prose-doc li.task-item input[type="checkbox"] {
+/* Task checkboxes match the shadcn-svelte Checkbox (styled box + check icon);
+   they're live in reading mode — clicking toggles the [ ] marker in the source. */
+.prose-doc li.task-item .task-box {
+  position: relative;
+  display: inline-flex;
   margin-right: 0.5em;
-  accent-color: var(--primary);
-  /* Live in reading mode: clicking toggles the [ ] marker in the source. */
+  vertical-align: -0.12em;
+}
+.prose-doc li.task-item input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1em;
+  height: 1em;
+  margin: 0;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  background-color: var(--background);
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   cursor: pointer;
+  transition:
+    background-color 120ms,
+    border-color 120ms,
+    box-shadow 120ms;
+}
+.dark .prose-doc li.task-item input[type="checkbox"] {
+  background-color: color-mix(in oklab, var(--input) 30%, transparent);
+}
+.prose-doc li.task-item input[type="checkbox"]:checked {
+  background-color: var(--primary);
+  border-color: var(--primary);
+}
+.prose-doc li.task-item input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent);
+}
+.prose-doc li.task-item .task-check {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 0.72em;
+  height: 0.72em;
+  color: var(--primary-foreground);
+  display: none;
+  pointer-events: none;
+}
+.prose-doc li.task-item input[type="checkbox"]:checked + .task-check {
+  display: block;
 }
 .prose-doc blockquote {
   border-left: 3px solid var(--prose-quote-border);
