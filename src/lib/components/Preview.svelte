@@ -837,7 +837,37 @@
     };
   });
 
+  /** Source-of-truth toggle for a task checkbox: flip the matching `[ ]`
+   *  marker inside the clicked block's source range; the re-render then
+   *  reflects it. Same-length splice, so block offsets stay valid. */
+  function toggleTask(input: HTMLInputElement) {
+    if (!container) return;
+    let el: HTMLElement | null = input;
+    while (el && el.parentElement !== container) el = el.parentElement;
+    const block = el ? blockMap.get(el) : undefined;
+    if (!el || !block) return;
+    const boxes = Array.from(el.querySelectorAll("input.task-checkbox"));
+    const idx = boxes.indexOf(input);
+    const src = app.content.slice(block.start, block.end);
+    const markers = [...src.matchAll(/^(\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[)([ xX])(?=\])/gm)];
+    // A fenced code block inside the list could desync the counts — bail out
+    // rather than ticking the wrong line.
+    if (idx < 0 || markers.length !== boxes.length) return;
+    const m = markers[idx];
+    const abs = block.start + (m.index ?? 0) + m[1].length;
+    const flipped = m[2] === " " ? "x" : " ";
+    app.content = app.content.slice(0, abs) + flipped + app.content.slice(abs + 1);
+    app.scheduleAutosave();
+  }
+
   function handleClick(event: MouseEvent) {
+    const checkbox = (event.target as HTMLElement).closest<HTMLInputElement>("input.task-checkbox");
+    if (checkbox) {
+      // The source update drives the re-render; don't let the DOM state fork.
+      event.preventDefault();
+      toggleTask(checkbox);
+      return;
+    }
     const mark = (event.target as HTMLElement).closest<HTMLElement>("mark.comment-hl");
     if (mark?.dataset.threadId) {
       app.openThread(mark.dataset.threadId);

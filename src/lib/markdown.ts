@@ -170,6 +170,10 @@ marked.use({
       }
       return false;
     },
+    checkbox({ checked }) {
+      // Enabled (marked emits `disabled`) so reading mode can toggle tasks.
+      return `<input type="checkbox" class="task-checkbox"${checked ? " checked" : ""}> `;
+    },
     listitem(item) {
       if (item.task) {
         // The checkbox itself is already among the item tokens.

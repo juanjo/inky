@@ -293,6 +293,8 @@
 .prose-doc li.task-item input[type="checkbox"] {
   margin-right: 0.5em;
   accent-color: var(--primary);
+  /* Live in reading mode: clicking toggles the [ ] marker in the source. */
+  cursor: pointer;
 }
 .prose-doc blockquote {
   border-left: 3px solid var(--prose-quote-border);

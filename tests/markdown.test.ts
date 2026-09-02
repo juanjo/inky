@@ -22,6 +22,18 @@ Intro text.
 ### **Bold** heading [link](https://x.dev)
 `;
 
+describe("task checkboxes", () => {
+  it("renders enabled, classed checkboxes", () => {
+    const html = renderMarkdown("- [ ] open\n- [x] done\n");
+    const boxes = [...html.matchAll(/<input[^>]*>/g)].map((m) => m[0]);
+    expect(boxes).toHaveLength(2);
+    expect(boxes[0]).toContain('class="task-checkbox"');
+    expect(boxes[0]).not.toContain("disabled");
+    expect(boxes[0]).not.toContain("checked");
+    expect(boxes[1]).toContain("checked");
+  });
+});
+
 describe("extractToc", () => {
   it("extracts levels and lines, skipping fenced code", () => {
     const toc = extractToc(SAMPLE);
