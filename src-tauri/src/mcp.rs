@@ -183,7 +183,7 @@ fn render_thread(t: &CommentThread) -> String {
 impl InkyMcp {
     pub fn new(lib: Library) -> Self {
         Self {
-            lib,
+            lib: lib.with_agent_origin(),
             tool_router: Self::tool_router(),
         }
     }
@@ -827,6 +827,7 @@ mod tests {
         let (_, list) = call(&f, "list_versions", serde_json::json!({"path": "v.md"})).await;
         let name = list.split_whitespace().next().unwrap().to_string();
         assert!(name.starts_with("v.") && name.ends_with(".md"), "{list}");
+        assert!(name.ends_with(".agent.md"), "MCP snapshots are agent-tagged: {name}");
         let (_, body) = call(
             &f,
             "read_version",

@@ -13,6 +13,8 @@
     name: string;
     modifiedMs: number;
     size: number;
+    /** Snapshot taken because an agent overwrote the document. */
+    agent: boolean;
   }
 
   let versions = $state<VersionInfo[]>([]);
@@ -115,7 +117,15 @@
               {selected === v.name ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'}"
             onclick={() => select(v.name)}
           >
-            <span class="block text-sm font-medium">{relativeTime(new Date(v.modifiedMs).toISOString())}</span>
+            <span class="flex items-center gap-1.5 text-sm font-medium">
+              {relativeTime(new Date(v.modifiedMs).toISOString())}
+              {#if v.agent}
+                <span
+                  class="rounded-sm bg-primary/10 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-primary"
+                  title="This version was replaced by an agent edit">agent</span
+                >
+              {/if}
+            </span>
             <span class="block text-[11px] text-muted-foreground">{fmtDate(v.modifiedMs)}</span>
           </button>
         {:else}

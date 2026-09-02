@@ -60,6 +60,8 @@ pub struct VersionInfo {
     pub name: String,
     pub modified_ms: u64,
     pub size: u64,
+    /// True when this snapshot was taken because an agent overwrote the document.
+    pub agent: bool,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -95,6 +97,16 @@ pub struct CommentThread {
     pub created_at: String,
     #[serde(default)]
     pub comments: Vec<CommentMsg>,
+}
+
+/// A delete parked in the stash folder, waiting for undo or purge.
+#[derive(Debug, Clone)]
+pub struct StashedDelete {
+    pub token: String,
+    pub original: PathBuf,
+    pub stashed: PathBuf,
+    /// (original sidecar path, stashed sidecar path)
+    pub sidecar: Option<(PathBuf, PathBuf)>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -214,7 +226,7 @@ fn history_files(doc: &Path) -> Vec<PathBuf> {
 
 /// Before overwriting a document, keep the old version in a hidden history
 /// folder next to it — at most one snapshot per 10 minutes, last 20 kept.
-fn snapshot(doc: &Path) {
+fn snapshot(doc: &Path, agent: bool) {
     let Ok(old) = fs::read_to_string(doc) else {
         return;
     };
@@ -234,7 +246,8 @@ fn snapshot(doc: &Path) {
         }
     }
     let ts = now_secs();
-    let _ = fs::write(dir.join(format!("{stem}.{ts}.{ext}")), old);
+    let marker = if agent { ".agent" } else { "" };
+    let _ = fs::write(dir.join(format!("{stem}.{ts}{marker}.{ext}")), old);
     if mine.len() >= SNAPSHOT_KEEP {
         for stale in &mine[..mine.len() + 1 - SNAPSHOT_KEEP] {
             let _ = fs::remove_file(stale);
@@ -353,6 +366,8 @@ pub fn iso_from_unix_millis(ms: u64) -> String {
 #[derive(Clone, Debug)]
 pub struct Library {
     root: PathBuf,
+    /// Marks snapshots taken by this handle as agent edits (the MCP server).
+    agent_origin: bool,
 }
 
 impl Library {
@@ -362,7 +377,14 @@ impl Library {
         let root: PathBuf = root.into();
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let root = root.canonicalize().map_err(|e| e.to_string())?;
-        Ok(Library { root })
+        Ok(Library { root, agent_origin: false })
+    }
+
+    /// Snapshots taken through this handle are tagged as agent edits, so the
+    /// history panel can say "replaced by an agent edit".
+    pub fn with_agent_origin(mut self) -> Self {
+        self.agent_origin = true;
+        self
     }
 
     /// Resolution used when no app handle exists (stdio mode):
@@ -454,7 +476,7 @@ impl Library {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         if fs::read_to_string(&p).map(|old| old != content).unwrap_or(false) {
-            snapshot(&p);
+            snapshot(&p, self.agent_origin);
         }
         fs::write(p, content).map_err(|e| e.to_string())
     }
@@ -470,7 +492,7 @@ impl Library {
         if count > 1 {
             return Err(format!("old_text occurs {count} times — include more surrounding context."));
         }
-        snapshot(&p);
+        snapshot(&p, self.agent_origin);
         fs::write(p, content.replacen(old_text, new_text, 1)).map_err(|e| e.to_string())
     }
 
@@ -500,11 +522,9 @@ impl Library {
                     .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
-                Some(VersionInfo {
-                    name: p.file_name()?.to_string_lossy().into_owned(),
-                    modified_ms,
-                    size: meta.len(),
-                })
+                let name = p.file_name()?.to_string_lossy().into_owned();
+                let agent = name.rsplit('.').nth(1) == Some("agent");
+                Some(VersionInfo { name, modified_ms, size: meta.len(), agent })
             })
             .collect();
         out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms).then_with(|| b.name.cmp(&a.name)));
@@ -636,6 +656,50 @@ impl Library {
         }
         fs::rename(&src, &target).map_err(|e| e.to_string())?;
         move_sidecar(&src, &target);
+        Ok(target)
+    }
+
+    /// Move a document or folder (and a document's sidecar) into a stash
+    /// folder so the delete can be undone. Fails (e.g. across volumes) rather
+    /// than falling back; the caller then uses plain `delete`.
+    pub fn stash_delete(&self, path: &str, stash_root: &Path) -> Result<StashedDelete, String> {
+        let p = self.resolve(path)?;
+        if !p.exists() {
+            return Err(format!("{path} does not exist"));
+        }
+        let token = new_id("undo");
+        let dir = stash_root.join(&token);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let name = p.file_name().ok_or("invalid path")?;
+        let stashed = dir.join(name);
+        fs::rename(&p, &stashed).map_err(|e| e.to_string())?;
+        let mut sidecar = None;
+        if let (Some(sc), Some(sc_name)) = (sidecar_for(&p), sidecar_for(&stashed)) {
+            if sc.exists() && fs::rename(&sc, &sc_name).is_ok() {
+                sidecar = Some((sc, sc_name));
+            }
+        }
+        Ok(StashedDelete { token, original: p, stashed, sidecar })
+    }
+
+    /// Put a stashed delete back where it came from (a name clash picks a
+    /// unique name). Returns the restored path.
+    pub fn restore_stashed(&self, entry: &StashedDelete) -> Result<PathBuf, String> {
+        let mut target = entry.original.clone();
+        if target.exists() {
+            let dir = target.parent().ok_or("invalid path")?.to_path_buf();
+            let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled").to_string();
+            let ext = target.extension().and_then(|e| e.to_str()).map(str::to_string);
+            target = unique_path(&dir, &stem, ext.as_deref());
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&entry.stashed, &target).map_err(|e| e.to_string())?;
+        if let (Some((_, from)), Some(to)) = (entry.sidecar.as_ref(), sidecar_for(&target)) {
+            let _ = fs::rename(from, to);
+        }
+        let _ = fs::remove_dir(entry.stashed.parent().unwrap_or(&entry.stashed));
         Ok(target)
     }
 
@@ -782,6 +846,55 @@ mod tests {
         lib.ensure_folder("F").unwrap();
         assert!(lib.move_into("F", "F/G").is_err());
         assert!(!lib.root().join("F/G").exists());
+    }
+
+    #[test]
+    fn agent_snapshots_are_tagged() {
+        let (_d, lib) = temp_lib();
+        let agent = lib.clone().with_agent_origin();
+        lib.write("t.md", "v1").unwrap();
+        agent.write("t.md", "v2").unwrap();
+        let versions = lib.list_versions("t.md").unwrap();
+        assert_eq!(versions.len(), 1);
+        assert!(versions[0].agent, "{versions:?}");
+        assert!(versions[0].name.ends_with(".agent.md"));
+        assert_eq!(lib.read_version("t.md", &versions[0].name).unwrap(), "v1");
+        // A later user edit snapshots untagged, but rate-limiting applies; just
+        // check the detection logic directly on a synthetic old-style name.
+        let dir = lib.root().join(HISTORY_DIR);
+        fs::write(dir.join("t.1000.md"), "x").unwrap();
+        let versions = lib.list_versions("t.md").unwrap();
+        let plain = versions.iter().find(|v| v.name == "t.1000.md").unwrap();
+        assert!(!plain.agent);
+    }
+
+    #[test]
+    fn stash_delete_round_trip() {
+        let (_d, lib) = temp_lib();
+        let stash = tempfile::tempdir().unwrap();
+        lib.write("s.md", "keep me").unwrap();
+        fs::write(lib.root().join(".s.md.comments.json"), "{}").unwrap();
+        let entry = lib.stash_delete("s.md", stash.path()).unwrap();
+        assert!(!lib.root().join("s.md").exists());
+        assert!(!lib.root().join(".s.md.comments.json").exists());
+        assert!(entry.stashed.exists());
+        let restored = lib.restore_stashed(&entry).unwrap();
+        assert_eq!(restored, lib.root().join("s.md"));
+        assert_eq!(lib.read("s.md").unwrap(), "keep me");
+        assert!(lib.root().join(".s.md.comments.json").exists());
+    }
+
+    #[test]
+    fn restore_stashed_picks_unique_name_when_occupied() {
+        let (_d, lib) = temp_lib();
+        let stash = tempfile::tempdir().unwrap();
+        lib.write("u.md", "old").unwrap();
+        let entry = lib.stash_delete("u.md", stash.path()).unwrap();
+        lib.write("u.md", "new").unwrap();
+        let restored = lib.restore_stashed(&entry).unwrap();
+        assert_eq!(lib.relative(&restored), "u 2.md");
+        assert_eq!(lib.read("u 2.md").unwrap(), "old");
+        assert_eq!(lib.read("u.md").unwrap(), "new");
     }
 
     #[test]

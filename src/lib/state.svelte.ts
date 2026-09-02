@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -153,6 +154,8 @@ class AppState {
 
     // Pick up documents created outside the app (e.g. via the MCP server).
     window.addEventListener("focus", () => this.syncFromDisk());
+    // The Rust side watches the library folder; agent edits show up live.
+    listen("library-changed", () => this.syncFromDisk());
     // Never let a debounced autosave die with the focus.
     window.addEventListener("blur", () => {
       if (this.dirty) this.save();
@@ -684,13 +687,39 @@ class AppState {
   }
 
   async deletePath(path: string) {
+    const name = path.split("/").pop() ?? path;
     try {
-      await invoke("delete_path", { path });
+      const token = await invoke<string | null>("delete_path", { path });
       if (this.currentPath === path || this.currentPath?.startsWith(path + "/")) {
         this.closeDoc();
       }
       await this.refreshTree();
-      toast.success("Moved to Trash");
+      if (!token) {
+        toast.success("Moved to Trash");
+        return;
+      }
+      // Parked in the undo stash; it goes to the Trash when the toast expires.
+      const purge = () => invoke("purge_delete", { token }).catch(() => {});
+      const timer = setTimeout(purge, 8_000);
+      toast.success(`Deleted ${name}`, {
+        duration: 8_000,
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            clearTimeout(timer);
+            try {
+              await invoke<string>("undo_delete", { token });
+              await this.refreshTree();
+            } catch (e) {
+              toast.error(`Undo failed: ${e}`);
+            }
+          },
+        },
+        onDismiss: () => {
+          clearTimeout(timer);
+          purge();
+        },
+      });
     } catch (e) {
       toast.error(`Delete failed: ${e}`);
     }

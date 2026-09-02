@@ -197,7 +197,7 @@
           </Button>
         {/snippet}
       </Tooltip.Trigger>
-      <Tooltip.Content>Version history</Tooltip.Content>
+      <Tooltip.Content>Version history (⌘Y)</Tooltip.Content>
     </Tooltip.Root>
 
     <Tooltip.Root>

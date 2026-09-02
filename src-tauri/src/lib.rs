@@ -61,6 +61,7 @@ fn library_root(app: tauri::AppHandle) -> Result<String, String> {
 fn set_library_root(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let root = to_string(Library::open(&path)?.root().to_path_buf());
     write_config(&app, &Config { library: Some(root.clone()) })?;
+    start_watcher(&app);
     Ok(root)
 }
 
@@ -125,9 +126,24 @@ fn write_comments(app: tauri::AppHandle, doc_path: String, json: String) -> Resu
     open_library(&app)?.write_raw_comments(&doc_path, &json)
 }
 
+/// Returns an undo token while the delete is parked in the stash; `None` when
+/// stashing wasn't possible (e.g. another volume) and it went straight to the
+/// Trash.
 #[tauri::command]
-fn delete_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    open_library(&app)?.delete(&path)
+fn delete_path(
+    app: tauri::AppHandle,
+    state: tauri::State<UndoStash>,
+    path: String,
+) -> Result<Option<String>, String> {
+    let lib = open_library(&app)?;
+    match stash_root(&app).and_then(|root| lib.stash_delete(&path, &root)) {
+        Ok(entry) => {
+            let token = entry.token.clone();
+            state.0.lock().unwrap().insert(token.clone(), entry);
+            Ok(Some(token))
+        }
+        Err(_) => lib.delete(&path).map(|_| None),
+    }
 }
 
 /// Move a file or folder into another folder inside the library.
@@ -178,6 +194,83 @@ fn doc_mtime(app: tauri::AppHandle, path: String) -> Result<u64, String> {
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+// --- live library watching ---------------------------------------------------
+
+struct LibraryWatcher(std::sync::Mutex<Option<notify_debouncer_mini::Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>>>);
+
+/// Watch the library folder and tell the frontend when anything changes, so
+/// agent edits show up live instead of on the next focus.
+fn start_watcher(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let state = app.state::<LibraryWatcher>();
+    let Ok(lib) = open_library(app) else { return };
+    let handle = app.clone();
+    let debouncer = notify_debouncer_mini::new_debouncer(
+        std::time::Duration::from_millis(400),
+        move |result: notify_debouncer_mini::DebounceEventResult| {
+            if result.is_ok() {
+                let _ = handle.emit("library-changed", ());
+            }
+        },
+    );
+    let Ok(mut debouncer) = debouncer else { return };
+    if debouncer
+        .watcher()
+        .watch(lib.root(), notify_debouncer_mini::notify::RecursiveMode::Recursive)
+        .is_ok()
+    {
+        *state.0.lock().unwrap() = Some(debouncer);
+    }
+}
+
+// --- undoable delete ---------------------------------------------------------
+
+struct UndoStash(std::sync::Mutex<std::collections::HashMap<String, library::StashedDelete>>);
+
+fn stash_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("undo");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Trash anything still sitting in the stash (leftovers of undone timers or a
+/// crashed session), so a stashed delete always ends up in the Trash.
+fn purge_stash_dir(app: &tauri::AppHandle) {
+    let Ok(dir) = stash_root(app) else { return };
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let _ = trash::delete(entry.path());
+        }
+    }
+}
+
+#[tauri::command]
+fn undo_delete(app: tauri::AppHandle, state: tauri::State<UndoStash>, token: String) -> Result<String, String> {
+    let entry = state
+        .0
+        .lock()
+        .unwrap()
+        .remove(&token)
+        .ok_or("nothing to undo")?;
+    let restored = open_library(&app)?.restore_stashed(&entry)?;
+    Ok(restored.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn purge_delete(state: tauri::State<UndoStash>, token: String) {
+    if let Some(entry) = state.0.lock().unwrap().remove(&token) {
+        let _ = trash::delete(&entry.stashed);
+        if let Some((_, sc)) = entry.sidecar {
+            let _ = trash::delete(sc);
+        }
+        let _ = fs::remove_dir(entry.stashed.parent().unwrap_or(&entry.stashed));
+    }
 }
 
 // --- app-hosted MCP server (in-process, streamable HTTP) --------------------
@@ -376,7 +469,11 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
                 .accelerator("CmdOrCtrl+S")
                 .build(handle)?,
         )
-        .item(&MenuItemBuilder::with_id("history", "Version History…").build(handle)?)
+        .item(
+            &MenuItemBuilder::with_id("history", "Version History…")
+                .accelerator("CmdOrCtrl+Y")
+                .build(handle)?,
+        )
         .separator()
         .item(
             &MenuItemBuilder::with_id("export_pdf", "Export as PDF…")
@@ -517,8 +614,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(McpServer(std::sync::Mutex::new(None)))
+        .manage(LibraryWatcher(std::sync::Mutex::new(None)))
+        .manage(UndoStash(std::sync::Mutex::new(std::collections::HashMap::new())))
         .setup(|app| {
             build_menu(app)?;
+            purge_stash_dir(app.handle());
+            start_watcher(app.handle());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -549,13 +650,16 @@ pub fn run() {
             start_mcp,
             stop_mcp,
             mcp_status,
-            app_binary_path
+            app_binary_path,
+            undo_delete,
+            purge_delete
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
                 stop_mcp_server(&app_handle.state::<McpServer>());
+                purge_stash_dir(app_handle);
             }
         });
 }
