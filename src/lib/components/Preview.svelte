@@ -142,40 +142,45 @@
         selAction = null;
         return;
       }
-      // Selecting during an in-place edit: clicking a block opens a session
-      // (select-and-type), which used to swallow the comment pill entirely.
-      // Capture the selection, commit the session, then offer the pill.
-      // Raw (CodeMirror) sessions keep selections to themselves.
-      if (blockEditing) {
-        if (!richWrapper) {
-          selAction = null;
-          return;
-        }
-      }
       const range = sel.getRangeAt(0);
+      // Selections inside a code-block editor are code editing, not commenting.
+      const anchorEl =
+        range.commonAncestorContainer instanceof Element
+          ? range.commonAncestorContainer
+          : range.commonAncestorContainer.parentElement;
+      if (anchorEl?.closest(".block-edit-cm")) {
+        selAction = null;
+        return;
+      }
       const quote = range.toString();
       if (!quote.trim() || quote.length > 1000) {
         selAction = null;
         return;
       }
+      // Note: an alive edit session does NOT suppress the pill, and nothing is
+      // committed here — committing replaces DOM nodes and would destroy the
+      // visible selection. The session (if any) commits when the pill is used.
       const rect = range.getBoundingClientRect();
       const srect = scroller.getBoundingClientRect();
-      const action = {
+      selAction = {
         x: Math.max(8, Math.min(rect.right - srect.left, srect.width - 130)),
         y: Math.max(4, rect.top - srect.top + scroller.scrollTop - 38),
         draft: { quote, ...contextAround(container, range) },
       };
-      // Commit only after the draft is captured — finishing replaces the DOM.
-      if (blockEditing) finishRichEdit(true);
-      selAction = action;
     }, 0);
   }
 
   function createComment() {
     if (!selAction) return;
-    app.startCommentDraft(selAction.draft);
+    const draft = selAction.draft;
     selAction = null;
-    window.getSelection()?.removeAllRanges();
+    // Now that the draft text is captured, an in-place edit session can be
+    // committed (this replaces DOM nodes, so it must come after the capture).
+    if (blockEditing) {
+      if (richWrapper) finishRichEdit(true);
+      else rawFinish?.(true);
+    }
+    app.startCommentDraft(draft);
   }
 
   // --- in-place block editing (reading mode) --------------------------------
@@ -329,6 +334,7 @@
     }
 
     wrapper.addEventListener("keydown", (ev) => {
+      selAction = null; // typing invalidates a selection pill
       if (ev.key === "Escape") {
         ev.preventDefault();
         finishRichEdit(false);
@@ -379,8 +385,12 @@
 
     const point = caret instanceof MouseEvent ? { x: caret.clientX, y: caret.clientY } : caret;
     requestAnimationFrame(() => {
+      if (richWrapper !== wrapper) return; // session already ended
       wrapper.focus();
       const sel = window.getSelection();
+      // A selection made after the opening click (double-click word select,
+      // fast drag) must survive — placing the caret would erase it.
+      if (sel && !sel.isCollapsed) return;
       try {
         if (typeof point === "object") {
           const range = document.caretRangeFromPoint(point.x, point.y);
@@ -540,6 +550,11 @@
       const anchor = wrapper.previousElementSibling ?? wrapper.nextElementSibling;
       wrapper.remove();
       restored = anchor;
+    } else if (html === richOriginalHtml && wrapper.firstElementChild) {
+      // Untouched session: put the original node back as-is. Keeping identity
+      // preserves any selection or drag anchored in it.
+      restored = wrapper.firstElementChild;
+      wrapper.replaceWith(restored);
     } else {
       const holder = document.createElement("div");
       holder.innerHTML = richOriginalHtml;
