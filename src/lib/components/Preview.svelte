@@ -132,15 +132,25 @@
       const sel = window.getSelection();
       if (
         app.isMermaidDoc ||
-        blockEditing ||
         !sel ||
         sel.isCollapsed ||
+        sel.rangeCount === 0 ||
         !container ||
         !scroller ||
         !container.contains(sel.getRangeAt(0).commonAncestorContainer)
       ) {
         selAction = null;
         return;
+      }
+      // Selecting during an in-place edit: clicking a block opens a session
+      // (select-and-type), which used to swallow the comment pill entirely.
+      // Capture the selection, commit the session, then offer the pill.
+      // Raw (CodeMirror) sessions keep selections to themselves.
+      if (blockEditing) {
+        if (!richWrapper) {
+          selAction = null;
+          return;
+        }
       }
       const range = sel.getRangeAt(0);
       const quote = range.toString();
@@ -150,11 +160,14 @@
       }
       const rect = range.getBoundingClientRect();
       const srect = scroller.getBoundingClientRect();
-      selAction = {
+      const action = {
         x: Math.max(8, Math.min(rect.right - srect.left, srect.width - 130)),
         y: Math.max(4, rect.top - srect.top + scroller.scrollTop - 38),
         draft: { quote, ...contextAround(container, range) },
       };
+      // Commit only after the draft is captured — finishing replaces the DOM.
+      if (blockEditing) finishRichEdit(true);
+      selAction = action;
     }, 0);
   }
 
