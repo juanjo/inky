@@ -617,6 +617,44 @@ fn print_document(window: tauri::WebviewWindow, save_path: Option<String>) -> Re
     }
 }
 
+// --- CLI installer ----------------------------------------------------------
+
+/// `/usr/local/bin/inky`: hands files/folders to Inky through macOS `open`,
+/// so they arrive exactly like a Finder double-click.
+const CLI_SCRIPT: &str = "#!/bin/sh\n# inky — open Markdown files or folders in Inky\nexec open -b com.inky.app \"$@\"\n";
+const CLI_PATH: &str = "/usr/local/bin/inky";
+
+fn shell_quote(p: &Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
+}
+
+/// Install the `inky` command (one administrator prompt). Async so the
+/// password dialog doesn't block the main thread.
+#[tauri::command]
+async fn install_cli(app: tauri::AppHandle) -> Result<String, String> {
+    let tmp = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("inky-cli");
+    fs::create_dir_all(tmp.parent().unwrap()).map_err(|e| e.to_string())?;
+    fs::write(&tmp, CLI_SCRIPT).map_err(|e| e.to_string())?;
+    let sh = format!(
+        "mkdir -p /usr/local/bin && cp {} {CLI_PATH} && chmod 755 {CLI_PATH}",
+        shell_quote(&tmp)
+    );
+    let apple = format!(
+        "do shell script \"{}\" with administrator privileges",
+        sh.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(apple)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(CLI_PATH.into())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// Recursively find a check menu item by id and set its checked state.
 #[tauri::command]
 fn set_menu_checked(app: tauri::AppHandle, id: String, checked: bool) {
@@ -659,6 +697,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let app_sub = SubmenuBuilder::new(handle, "Inky")
         .about(Some(AboutMetadata::default()))
         .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates…").build(handle)?)
+        .item(&MenuItemBuilder::with_id("install_cli", "Install 'inky' Command in PATH…").build(handle)?)
         .separator()
         .services()
         .separator()
@@ -938,6 +977,7 @@ pub fn run() {
             open_recent,
             take_pending_opens,
             quit_app,
+            install_cli,
             start_mcp,
             stop_mcp,
             mcp_status,
@@ -972,5 +1012,17 @@ mod tests {
         assert_eq!(recent_label("/Users/me/repo/README.md", Some(home)), "README.md — ~/repo");
         assert_eq!(recent_label("/opt/x.md", Some(home)), "x.md — /opt");
         assert_eq!(recent_label("/Users/me/a.md", Some(home)), "a.md — ~");
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote(Path::new("/a b/c")), "'/a b/c'");
+        assert_eq!(shell_quote(Path::new("/it's")), r"'/it'\''s'");
+    }
+
+    #[test]
+    fn cli_script_opens_by_bundle_id_and_passes_all_args() {
+        assert!(CLI_SCRIPT.starts_with("#!/bin/sh\n"));
+        assert!(CLI_SCRIPT.contains(r#"exec open -b com.inky.app "$@""#));
     }
 }
