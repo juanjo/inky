@@ -43,8 +43,9 @@
       print: () => app.printDoc(),
       find: () => app.openSearch(),
       search_library: () => (app.librarySearchVisible = true),
+      install_cli: () => app.installCli(),
       history: () => {
-        if (app.currentPath) app.historyVisible = true;
+        if (app.currentPath && app.docSidecars) app.historyVisible = true;
       },
       view_reading: () => app.setViewMode("preview"),
       view_split: () => app.setViewMode("split"),

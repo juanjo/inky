@@ -179,7 +179,7 @@
   let selAction = $state<{ x: number; y: number; draft: CommentDraft } | null>(null);
 
   function updateSelAction() {
-    if (!view || app.isMermaidDoc) return;
+    if (!view || app.isMermaidDoc || !app.docSidecars) return;
     const sel = view.state.selection.main;
     if (sel.empty || sel.to - sel.from > 1000) {
       selAction = null;

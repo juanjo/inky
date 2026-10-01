@@ -137,6 +137,7 @@
     setTimeout(() => {
       const sel = window.getSelection();
       if (
+        !app.docSidecars ||
         app.isMermaidDoc ||
         !sel ||
         sel.isCollapsed ||
@@ -921,7 +922,7 @@
     maybeStartGapEdit(event);
   }
 
-  function handleLink(href: string) {
+  async function handleLink(href: string) {
     if (!href) return;
     if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
       // External scheme (https, mailto, …) → the user's default apps.
@@ -936,29 +937,24 @@
         ?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
-    // Relative link: resolve against the current document's folder.
+    // Relative link: Rust resolves it against the current document (and
+    // grants Markdown targets outside the library). The href goes through raw,
+    // and the source must be saved so Rust can check the link is really there.
     if (!app.currentPath) return;
-    const dir = app.currentPath.slice(0, app.currentPath.lastIndexOf("/"));
-    const parts = `${dir}/${decodeURIComponent(href)}`.split("/");
-    const resolved: string[] = [];
-    for (const part of parts) {
-      if (part === "" || part === ".") continue;
-      if (part === "..") resolved.pop();
-      else resolved.push(part);
-    }
-    const target = "/" + resolved.join("/");
-    invoke<boolean>("path_exists", { path: target }).then(async (exists) => {
-      if (!exists) {
-        toast.error(`Linked file not found: ${href}`);
-        return;
-      }
-      if (/\.(md|markdown|mmd)$/i.test(target)) {
-        app.openDoc(target);
-      } else {
-        const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-        revealItemInDir(target);
-      }
-    });
+    if (app.dirty) await app.save();
+    invoke<{ path: string; doc: boolean }>("follow_link", {
+      fromDoc: app.currentPath,
+      href,
+    })
+      .then(async ({ path, doc }) => {
+        if (doc) {
+          app.openDoc(path);
+        } else {
+          const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+          revealItemInDir(path);
+        }
+      })
+      .catch((e) => toast.error(String(e)));
   }
 </script>
 

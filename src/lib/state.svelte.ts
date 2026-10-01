@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -7,9 +8,10 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "svelte-sonner";
 import { EditorView } from "@codemirror/view";
-import type { ThemeName, TreeNode, ViewMode } from "./types";
+import type { OpenRequest, ThemeName, TreeNode, ViewMode } from "./types";
 import { WELCOME_DOC, MERMAID_TEMPLATE } from "./templates";
 import { extractToc, type TocEntry } from "./markdown";
+import { isInside } from "./paths";
 import { lockSync } from "./scrollsync";
 import { newId, type CommentThread } from "./comments";
 import {
@@ -57,6 +59,13 @@ export interface SearchBackend {
 
 class AppState {
   libraryRoot = $state("");
+  /** Folder opened from outside the library, shown in the sidebar instead of it. */
+  workspace = $state<string | null>(null);
+  activeRoot = $derived(this.workspace ?? this.libraryRoot);
+  /** False for documents outside the library: no comments, no history. */
+  docSidecars = $state(true);
+  homeDir = $state("");
+  recentDocs = $state<string[]>([]);
   tree = $state<TreeNode[]>([]);
   currentPath = $state<string | null>(null);
   content = $state("");
@@ -124,7 +133,7 @@ class AppState {
   /** Flat list of every document, for the quick-open switcher. */
   flatDocs = $derived.by(() => {
     const out: { name: string; path: string; rel: string }[] = [];
-    const prefix = this.libraryRoot.length + 1;
+    const prefix = this.activeRoot.length + 1;
     const walk = (nodes: TreeNode[]) => {
       for (const n of nodes) {
         if (n.isDir) walk(n.children);
@@ -153,20 +162,34 @@ class AppState {
     this.applyReadingPrefs();
 
     this.libraryRoot = await invoke<string>("library_root");
+    this.homeDir = await homeDir().catch(() => "");
+    this.workspace = await invoke<string | null>("workspace_root");
     await this.refreshTree();
 
-    if (this.tree.length === 0) {
-      const path = await invoke<string>("create_doc", {
+    // Listen before draining so nothing falls between the two.
+    await listen<OpenRequest>("open-request", (e) => this.handleOpenRequest(e.payload));
+    const pending = await invoke<OpenRequest[]>("take_pending_opens");
+    let welcome: string | null = null;
+    if (this.tree.length === 0 && !this.workspace) {
+      welcome = await invoke<string>("create_doc", {
         dir: this.libraryRoot,
         name: "Welcome to Inky",
         ext: "md",
         content: WELCOME_DOC,
       });
       await this.refreshTree();
-      await this.openDoc(path);
+    }
+    if (pending.length > 0) {
+      for (const req of pending) await this.handleOpenRequest(req);
+    } else if (welcome) {
+      await this.openDoc(welcome);
     } else {
       const last = localStorage.getItem("inky.lastDoc");
-      if (last) await this.openDoc(last, { silent: true });
+      if (last) {
+        // Outside documents need re-granting; library ones pass straight through.
+        const resolved = await invoke<string>("open_recent", { path: last }).catch(() => last);
+        await this.openDoc(resolved, { silent: true });
+      }
     }
 
     // Pick up documents created outside the app (e.g. via the MCP server).
@@ -317,6 +340,7 @@ class AppState {
   }
 
   toggleComments() {
+    if (!this.docSidecars && !this.commentsVisible) return;
     this.commentsVisible = !this.commentsVisible;
     if (this.commentsVisible) this.tocVisible = false;
     else this.commentDraft = null;
@@ -331,6 +355,7 @@ class AppState {
     this.threadOrder = {};
     this.editorThreadPos = {};
     if (!this.currentPath) return;
+    if (!this.docSidecars) return;
     try {
       const raw = await invoke<string>("read_comments", { docPath: this.currentPath });
       if (raw) {
@@ -632,7 +657,13 @@ class AppState {
       this.#docMtime = await invoke<number>("doc_mtime", { path }).catch(() => null);
       localStorage.setItem("inky.lastDoc", path);
       getCurrentWindow().setTitle(`${this.docName.replace(/\.(md|markdown|mmd)$/i, "")} — Inky`);
+      this.docSidecars = await invoke<boolean>("doc_sidecars", { path }).catch(() => false);
+      if (!this.docSidecars) {
+        this.commentsVisible = false;
+        this.historyVisible = false;
+      }
       await this.loadComments();
+      invoke("note_recent", { path }).catch(() => {});
       if (opts.restoreScroll !== undefined && this.viewMode === "editor" && this.editorView) {
         const scrollDOM = this.editorView.scrollDOM;
         const top = opts.restoreScroll;
@@ -672,6 +703,7 @@ class AppState {
     this.commentThreads = [];
     this.commentDraft = null;
     this.activeThreadId = null;
+    this.docSidecars = true;
     localStorage.removeItem("inky.lastDoc");
     getCurrentWindow().setTitle("Inky");
   }
@@ -713,7 +745,7 @@ class AppState {
     const isMermaid = kind === "mermaid";
     try {
       const path = await invoke<string>("create_doc", {
-        dir: dir ?? this.libraryRoot,
+        dir: dir ?? this.activeRoot,
         name: isMermaid ? "Untitled diagram" : "Untitled",
         ext: isMermaid ? "mmd" : "md",
         content: isMermaid ? MERMAID_TEMPLATE : "# Untitled\n\n",
@@ -728,7 +760,7 @@ class AppState {
 
   async newFolder(dir: string | undefined, name: string) {
     try {
-      await invoke("create_folder", { dir: dir ?? this.libraryRoot, name });
+      await invoke("create_folder", { dir: dir ?? this.activeRoot, name });
       await this.refreshTree();
     } catch (e) {
       toast.error(`Could not create folder: ${e}`);
@@ -896,12 +928,54 @@ class AppState {
     }
   }
 
+  async refreshRecents() {
+    this.recentDocs = await invoke<string[]>("recent_docs").catch(() => []);
+  }
+
+  /** Open from the recents list (re-grants documents outside the library). */
+  async openRecent(path: string) {
+    try {
+      const resolved = await invoke<string>("open_recent", { path });
+      await this.openDoc(resolved);
+    } catch (e) {
+      toast.error(`Could not open document: ${e}`);
+    }
+  }
+
+  async handleOpenRequest(req: OpenRequest) {
+    if (req.kind === "folder") {
+      this.workspace = req.path;
+      this.sidebarVisible = true;
+      await this.refreshTree();
+    } else {
+      await this.openDoc(req.path);
+    }
+    await getCurrentWindow().setFocus();
+  }
+
+  async closeWorkspace() {
+    await invoke("clear_workspace", { keep: this.currentPath });
+    this.workspace = null;
+    await this.refreshTree();
+  }
+
+  async installCli() {
+    try {
+      const path = await invoke<string>("install_cli");
+      toast.success(`Installed ${path}. Try: inky README.md`);
+    } catch (e) {
+      if (!String(e).includes("User canceled")) toast.error(`Could not install the command: ${e}`);
+    }
+  }
+
   async chooseLibrary() {
     const dir = await open({ directory: true, defaultPath: this.libraryRoot });
     if (typeof dir !== "string") return;
     try {
+      await invoke("clear_workspace", { keep: null });
       this.libraryRoot = await invoke<string>("set_library_root", { path: dir });
       this.closeDoc();
+      this.workspace = null;
       this.nav = emptyHistory();
       await this.refreshTree();
       toast.success(`Library: ${dir}`);
