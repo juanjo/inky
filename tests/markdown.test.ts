@@ -131,3 +131,25 @@ describe("renderMarkdown", () => {
     expect(html).not.toContain("onerror");
   });
 });
+
+describe("inline math", () => {
+  it("leaves dollar amounts as text", () => {
+    const html = renderMarkdown("It costs $30 to $40, or $5 and $6.");
+    expect(html).not.toContain("katex");
+    expect(html).toContain("$30 to $40, or $5 and $6.");
+  });
+
+  it("renders $...$ math, including next to punctuation", () => {
+    expect(renderMarkdown("where $x^2$ is")).toContain("katex");
+    expect(renderMarkdown("(see $a+b$)")).toContain("katex");
+    expect(renderMarkdown("display $$E=mc^2$$ inline")).toContain("katex-display");
+  });
+
+  it("needs non-space just inside the delimiters", () => {
+    expect(renderMarkdown("a $ b $ c")).not.toContain("katex");
+  });
+
+  it("still renders block math", () => {
+    expect(renderMarkdown("$$\nx = 1\n$$\n")).toContain("katex-display");
+  });
+});

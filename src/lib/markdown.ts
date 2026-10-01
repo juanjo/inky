@@ -23,6 +23,38 @@ const marked = new Marked(
 );
 
 marked.use(markedKatex({ throwOnError: false, nonStandard: true }));
+
+// Pandoc's rule for inline math: no space just inside the delimiters, and the
+// closing `$` is not followed by a digit — so "$30 to $40" stays text.
+const inlineMath = /^(\${1,2})(?!\s)((?:\\.|[^\\\n$])+?)(?<!\s)\1(?!\d)/;
+
+// Registered after markedKatex so it runs first: it emits the katex token
+// itself, and a `$` that fails the rule becomes literal text.
+marked.use({
+  extensions: [
+    {
+      name: "inlineMath",
+      level: "inline",
+      start: (src: string) => {
+        const index = src.indexOf("$");
+        return index === -1 ? undefined : index;
+      },
+      tokenizer(src: string) {
+        const match = inlineMath.exec(src);
+        if (match) {
+          return {
+            type: "inlineKatex",
+            raw: match[0],
+            text: match[2].trim(),
+            displayMode: match[1].length === 2,
+          };
+        }
+        const dollars = /^\$+/.exec(src);
+        if (dollars) return { type: "text", raw: dollars[0], text: dollars[0] };
+      },
+    },
+  ],
+});
 marked.use(markedFootnote());
 
 let slugCounts = new Map<string, number>();
