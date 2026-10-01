@@ -39,6 +39,45 @@ pub fn is_doc(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Folders never shown, searched or watched: build output, dependencies,
+/// virtualenvs. Hidden entries are skipped too.
+pub const SKIP_DIRS: [&str; 7] = ["node_modules", "target", "dist", "build", "__pycache__", ".venv", "venv"];
+
+fn skipped_name(name: &str) -> bool {
+    name.starts_with('.') || SKIP_DIRS.contains(&name)
+}
+
+/// True if any component of the (root-relative) path is hidden or a `SKIP_DIRS` folder.
+pub fn is_skipped_path(rel: &Path) -> bool {
+    rel.components().any(|c| skipped_name(&c.as_os_str().to_string_lossy()))
+}
+
+/// Should a file-system event at `path` (under the watched `root`) refresh
+/// the frontend? Documents, folders and comment sidecars — not anything in
+/// hidden or skipped folders.
+pub fn is_watch_relevant(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return true;
+    };
+    let name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if name.starts_with('.') && name.ends_with(".comments.json") {
+        return !is_skipped_path(rel.parent().unwrap_or(Path::new("")));
+    }
+    // A path that no longer exists and has no extension was most likely a folder.
+    let folder = path.is_dir() || (!path.exists() && path.extension().is_none());
+    (is_doc(path) || folder) && !is_skipped_path(rel)
+}
+
+/// A directory entry the tree/walk should not descend into or list.
+fn skip_entry(entry: &fs::DirEntry, name: &str) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+    let path = entry.path();
+    let symlink = entry.file_type().map(|t| t.is_symlink()).unwrap_or(false);
+    path.is_dir() && (SKIP_DIRS.contains(&name) || symlink)
+}
+
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Node {
@@ -125,7 +164,9 @@ struct Sidecar {
 
 // --- free helpers ------------------------------------------------------------
 
-fn build_tree(dir: &Path) -> Vec<Node> {
+/// `prune_empty`: drop folders with no documents anywhere below (workspaces;
+/// the library keeps empty folders the user created).
+fn build_tree(dir: &Path, prune_empty: bool) -> Vec<Node> {
     let mut nodes: Vec<Node> = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
         return nodes;
@@ -133,13 +174,13 @@ fn build_tree(dir: &Path) -> Vec<Node> {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        if skip_entry(&entry, &name) {
             continue;
         }
         if path.is_dir() {
-            let children = build_tree(&path);
+            let children = build_tree(&path, prune_empty);
             // Image-attachment folders with no documents inside are noise.
-            if name.eq_ignore_ascii_case("assets") && children.is_empty() {
+            if children.is_empty() && (prune_empty || name.eq_ignore_ascii_case("assets")) {
                 continue;
             }
             nodes.push(Node {
@@ -173,7 +214,7 @@ fn walk_into(dir: &Path, root: &Path, out: &mut Vec<Entry>) {
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') {
+        if skip_entry(&entry, &name) {
             continue;
         }
         let path = entry.path();
@@ -473,7 +514,7 @@ impl Library {
     // --- documents ---
 
     pub fn tree(&self) -> Vec<Node> {
-        build_tree(&self.root)
+        build_tree(&self.root, !self.sidecars)
     }
 
     /// Flat, sorted listing of every folder and document (relative paths).
@@ -1013,6 +1054,80 @@ mod tests {
                 ("z.md".to_string(), EntryKind::Markdown),
             ]
         );
+    }
+
+    /// node_modules/x.md, target/y.md, a symlinked folder, an empty folder,
+    /// and real/a.md. Every document contains "needle".
+    fn cluttered_root() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for p in ["node_modules/x.md", "target/y.md", "real/a.md", "real/__pycache__/z.md"] {
+            fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            fs::write(root.join(p), "needle").unwrap();
+        }
+        fs::create_dir(root.join("empty")).unwrap();
+        fs::write(elsewhere.path().join("linked.md"), "needle").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), root.join("link")).unwrap();
+        (dir, elsewhere, root)
+    }
+
+    fn names(nodes: &[Node]) -> Vec<String> {
+        let mut out = Vec::new();
+        for n in nodes {
+            out.push(n.name.clone());
+            out.extend(names(&n.children).into_iter().map(|c| format!("{}/{c}", n.name)));
+        }
+        out
+    }
+
+    #[test]
+    fn workspace_tree_skips_clutter_and_prunes_empty_folders() {
+        let (_d, _e, root) = cluttered_root();
+        let ws = Library::open(&root).unwrap().without_sidecars();
+        assert_eq!(names(&ws.tree()), vec!["real", "real/a.md"]);
+    }
+
+    #[test]
+    fn library_tree_skips_clutter_but_keeps_empty_folders() {
+        let (_d, _e, root) = cluttered_root();
+        let lib = Library::open(&root).unwrap();
+        assert_eq!(names(&lib.tree()), vec!["empty", "real", "real/a.md"]);
+    }
+
+    #[test]
+    fn search_and_walk_skip_clutter() {
+        let (_d, _e, root) = cluttered_root();
+        let lib = Library::open(&root).unwrap();
+        let hits: Vec<String> = lib.search("needle").into_iter().map(|h| h.path).collect();
+        assert_eq!(hits, vec![root.join("real/a.md").to_string_lossy().into_owned()]);
+        let rels: Vec<String> = lib.walk().into_iter().map(|e| e.rel).collect();
+        assert_eq!(rels, vec!["empty/", "real/", "real/a.md"]);
+    }
+
+    #[test]
+    fn skipped_paths_are_hidden_or_clutter() {
+        assert!(is_skipped_path(Path::new("node_modules/x.md")));
+        assert!(is_skipped_path(Path::new("a/target/y.md")));
+        assert!(is_skipped_path(Path::new(".inky-history/a.md")));
+        assert!(is_skipped_path(Path::new("a/.git/HEAD")));
+        assert!(!is_skipped_path(Path::new("real/a.md")));
+        assert!(!is_skipped_path(Path::new("targets/a.md")));
+    }
+
+    #[test]
+    fn watch_relevance() {
+        let (_d, _e, root) = cluttered_root();
+        let r = |p: &str| is_watch_relevant(&root, &root.join(p));
+        assert!(r("real/a.md"));
+        assert!(r("real"), "folders count");
+        assert!(r("gone.md"), "deleted documents count");
+        assert!(r("real/.a.md.comments.json"), "agent comments show up live");
+        assert!(!r("node_modules/x.md"));
+        assert!(!r("real/__pycache__/z.md"));
+        assert!(!r(".inky-history/a.md"));
+        assert!(!r(".git/.a.md.comments.json"));
+        assert!(!r("real/notes.txt"));
     }
 
     #[test]

@@ -430,10 +430,16 @@ fn start_watcher(app: &tauri::AppHandle) {
     state.0.lock().unwrap().take();
     let Ok(lib) = active_library(app) else { return };
     let handle = app.clone();
+    let root = lib.root().to_path_buf();
     let debouncer = notify_debouncer_mini::new_debouncer(
         std::time::Duration::from_millis(400),
         move |result: notify_debouncer_mini::DebounceEventResult| {
-            if result.is_ok() {
+            // Builds in node_modules/target/…, `.git` churn and history
+            // snapshots don't concern the sidebar.
+            let relevant = result
+                .map(|events| events.iter().any(|e| library::is_watch_relevant(&root, &e.path)))
+                .unwrap_or(false);
+            if relevant {
                 let _ = handle.emit("library-changed", ());
             }
         },
