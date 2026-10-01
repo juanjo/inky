@@ -26,17 +26,38 @@
   import History from "@lucide/svelte/icons/history";
   import UnfoldVertical from "@lucide/svelte/icons/unfold-vertical";
   import Search from "@lucide/svelte/icons/search";
-  import type { ViewMode } from "$lib/types";
-  import { displayDir, isInside } from "$lib/paths";
+  import Folder from "@lucide/svelte/icons/folder";
+  import FileText from "@lucide/svelte/icons/file-text";
+  import type { TreeNode, ViewMode } from "$lib/types";
+  import { breadcrumbs, type Crumb } from "$lib/paths";
 
-  /** Folder of a document opened from outside the library/workspace. */
-  const outsideDir = $derived(
-    app.currentPath &&
-      !isInside(app.currentPath, app.libraryRoot) &&
-      !(app.workspace && isInside(app.currentPath, app.workspace))
-      ? displayDir(app.currentPath, app.homeDir)
-      : null,
+  /** Folder trail to the open document; each folder lists its contents. */
+  const crumbs = $derived(
+    app.currentPath
+      ? breadcrumbs(app.currentPath, {
+          library: app.libraryRoot,
+          workspace: app.workspace,
+          home: app.homeDir,
+        })
+      : [],
   );
+  /** Deep trails keep the root and the last two folders; `null` marks the gap. */
+  const shownCrumbs = $derived<(Crumb | null)[]>(
+    crumbs.length > 3 ? [crumbs[0], null, ...crumbs.slice(-2)] : crumbs,
+  );
+
+  function childrenOf(dir: string): TreeNode[] {
+    if (dir === app.activeRoot) return app.tree;
+    const find = (nodes: TreeNode[]): TreeNode[] | null => {
+      for (const n of nodes) {
+        if (!n.isDir) continue;
+        if (n.path === dir) return n.children;
+        if (dir.startsWith(n.path + "/")) return find(n.children);
+      }
+      return null;
+    };
+    return find(app.tree) ?? [];
+  }
 
   const viewModes: { mode: ViewMode; label: string; icon: typeof BookOpen }[] = [
     { mode: "preview", label: "Reading (⌘1)", icon: BookOpen },
@@ -72,6 +93,32 @@
     revealItemInDir(app.activeRoot);
   }
 </script>
+
+{#snippet folderItems(nodes: TreeNode[])}
+  {#each nodes as node (node.path)}
+    {#if node.isDir}
+      <DropdownMenu.Sub>
+        <DropdownMenu.SubTrigger>
+          <Folder class="size-4 opacity-60" />
+          <span class="truncate">{node.name}</span>
+        </DropdownMenu.SubTrigger>
+        <DropdownMenu.SubContent class="max-h-96 w-64 overflow-y-auto">
+          {@render folderItems(node.children)}
+        </DropdownMenu.SubContent>
+      </DropdownMenu.Sub>
+    {:else}
+      <DropdownMenu.Item
+        class={node.path === app.currentPath ? "font-medium" : ""}
+        onclick={() => app.openDoc(node.path)}
+      >
+        <FileText class="size-4 opacity-60" />
+        <span class="truncate">{node.name.replace(/\.(md|markdown|mmd)$/i, "")}</span>
+      </DropdownMenu.Item>
+    {/if}
+  {:else}
+    <DropdownMenu.Item disabled>No documents</DropdownMenu.Item>
+  {/each}
+{/snippet}
 
 <!-- pl-[76px] clears the macOS traffic lights (overlay title bar) -->
 <header
@@ -124,6 +171,35 @@
     </Tooltip.Root>
 
     <div class="ml-1 flex min-w-0 items-center gap-2">
+      {#if shownCrumbs.length > 0}
+        <nav class="flex min-w-0 shrink items-center text-sm text-muted-foreground" aria-label="Breadcrumbs">
+          {#each shownCrumbs as crumb (crumb?.dir ?? "gap")}
+            {#if crumb === null}
+              <span class="px-1" title={crumbs.map((c) => c.label).join(" › ")}>…</span>
+            {:else if crumb.browsable}
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger>
+                  {#snippet child({ props })}
+                    <button
+                      {...props}
+                      class="max-w-40 truncate rounded-sm px-1 hover:bg-accent/60 hover:text-foreground"
+                      title={crumb.dir}
+                    >
+                      {crumb.label}
+                    </button>
+                  {/snippet}
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Content align="start" class="max-h-96 w-64 overflow-y-auto">
+                  {@render folderItems(childrenOf(crumb.dir))}
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>
+            {:else}
+              <span class="max-w-56 truncate px-1" title={app.currentPath}>{crumb.label}</span>
+            {/if}
+            <span class="shrink-0 text-muted-foreground/60" aria-hidden="true">›</span>
+          {/each}
+        </nav>
+      {/if}
       {#if editingTitle}
         <!-- svelte-ignore a11y_autofocus -->
         <input
@@ -148,14 +224,6 @@
         >
           {app.currentPath ? docStem() : "Inky"}
         </button>
-      {/if}
-      {#if outsideDir}
-        <span
-          class="max-w-56 shrink truncate text-xs text-muted-foreground/80"
-          title={app.currentPath}
-        >
-          {outsideDir}
-        </span>
       {/if}
       {#if app.dirty}
         <span class="size-1.5 shrink-0 rounded-full bg-muted-foreground" title="Unsaved changes"></span>
