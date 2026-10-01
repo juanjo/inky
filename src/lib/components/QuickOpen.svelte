@@ -2,6 +2,7 @@
   import { fade, fly } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import { app } from "$lib/state.svelte";
+  import { displayDir, isInside } from "$lib/paths";
   import FileText from "@lucide/svelte/icons/file-text";
   import Workflow from "@lucide/svelte/icons/workflow";
 
@@ -9,28 +10,62 @@
   let selected = $state(0);
   let input: HTMLInputElement | undefined = $state();
 
+  interface Item {
+    name: string;
+    path: string;
+    /** Subtitle: folder within the root, or ~/dir for outside documents. */
+    where: string;
+    recent: boolean;
+  }
+
+  const items = $derived.by((): Item[] => {
+    const seen = new Set<string>();
+    const out: Item[] = [];
+    for (const path of app.recentDocs) {
+      if (path === app.currentPath) continue;
+      seen.add(path);
+      const inRoot = isInside(path, app.activeRoot);
+      const rel = inRoot ? path.slice(app.activeRoot.length + 1) : "";
+      out.push({
+        name: path.split("/").pop() ?? path,
+        path,
+        where: inRoot ? rel.slice(0, Math.max(0, rel.lastIndexOf("/"))) : displayDir(path, app.homeDir),
+        recent: true,
+      });
+    }
+    for (const d of app.flatDocs) {
+      if (seen.has(d.path)) continue;
+      out.push({
+        name: d.name,
+        path: d.path,
+        where: d.rel.includes("/") ? d.rel.slice(0, d.rel.lastIndexOf("/")) : "",
+        recent: false,
+      });
+    }
+    return out;
+  });
+
   const results = $derived.by(() => {
     const q = query.trim().toLowerCase();
-    const docs = app.flatDocs;
-    if (!q) return docs.slice(0, 12);
-    return docs
+    if (!q) return items.slice(0, 12);
+    return items
       .map((d) => {
         const name = d.name.toLowerCase();
-        const rel = d.rel.toLowerCase();
         let score = 0;
         if (name.startsWith(q)) score = 3;
         else if (name.includes(q)) score = 2;
-        else if (rel.includes(q)) score = 1;
+        else if (`${d.where}/${name}`.toLowerCase().includes(q)) score = 1;
         return { ...d, score };
       })
       .filter((d) => d.score > 0)
-      .sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel))
+      .sort((a, b) => b.score - a.score) // stable: recents keep their lead on ties
       .slice(0, 12);
   });
 
   $effect(() => {
     if (app.quickOpenVisible) {
       query = "";
+      app.refreshRecents();
       selected = 0;
       setTimeout(() => input?.focus(), 30);
     }
@@ -47,10 +82,10 @@
 
   function openSelected() {
     const doc = results[selected];
-    if (doc) {
-      app.openDoc(doc.path);
-      close();
-    }
+    if (!doc) return;
+    if (doc.recent) app.openRecent(doc.path);
+    else app.openDoc(doc.path);
+    close();
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -108,10 +143,8 @@
             <FileText class="size-4 shrink-0 opacity-60" />
           {/if}
           <span class="truncate font-medium">{stripExt(doc.name)}</span>
-          {#if doc.rel.includes("/")}
-            <span class="ml-auto shrink-0 truncate text-xs text-muted-foreground">
-              {doc.rel.slice(0, doc.rel.lastIndexOf("/"))}
-            </span>
+          {#if doc.where}
+            <span class="ml-auto shrink-0 truncate text-xs text-muted-foreground">{doc.where}</span>
           {/if}
         </button>
       {:else}

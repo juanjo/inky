@@ -11,6 +11,8 @@
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Workflow from "@lucide/svelte/icons/workflow";
   import Plus from "@lucide/svelte/icons/plus";
+  import ArrowLeft from "@lucide/svelte/icons/arrow-left";
+  import FolderOpen from "@lucide/svelte/icons/folder-open";
 
   let renameTarget = $state<TreeNode | null>(null);
   let deleteTarget = $state<TreeNode | null>(null);
@@ -31,7 +33,7 @@
     const src = e.dataTransfer?.getData(DRAG_TYPE);
     if (!src) return;
     e.preventDefault();
-    app.movePath(src, app.libraryRoot);
+    app.movePath(src, app.activeRoot);
   }
 
   function stripExt(name: string) {
@@ -45,7 +47,25 @@
 
 <aside class="flex h-full flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border">
   <div class="flex items-center justify-between px-3 pt-3 pb-1">
-    <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Library</span>
+    {#if app.workspace}
+      <div class="flex min-w-0 items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          class="size-6 shrink-0"
+          title="Back to Library"
+          onclick={() => app.closeWorkspace()}
+        >
+          <ArrowLeft class="size-4" />
+        </Button>
+        <FolderOpen class="size-3.5 shrink-0 text-muted-foreground" />
+        <span class="truncate text-xs font-semibold text-muted-foreground" title={app.workspace}>
+          {app.workspace.split("/").pop()}
+        </span>
+      </div>
+    {:else}
+      <span class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Library</span>
+    {/if}
     <DropdownMenu.Root>
       <DropdownMenu.Trigger>
         {#snippet child({ props })}
@@ -61,7 +81,7 @@
         <DropdownMenu.Item onclick={() => app.newDoc(undefined, "mermaid")}>
           <Workflow class="size-4" /> New Mermaid diagram
         </DropdownMenu.Item>
-        <DropdownMenu.Item onclick={() => (newFolderDir = app.libraryRoot)}>
+        <DropdownMenu.Item onclick={() => (newFolderDir = app.activeRoot)}>
           <FolderPlus class="size-4" /> New folder
         </DropdownMenu.Item>
       </DropdownMenu.Content>

@@ -27,6 +27,16 @@
   import UnfoldVertical from "@lucide/svelte/icons/unfold-vertical";
   import Search from "@lucide/svelte/icons/search";
   import type { ViewMode } from "$lib/types";
+  import { displayDir, isInside } from "$lib/paths";
+
+  /** Folder of a document opened from outside the library/workspace. */
+  const outsideDir = $derived(
+    app.currentPath &&
+      !isInside(app.currentPath, app.libraryRoot) &&
+      !(app.workspace && isInside(app.currentPath, app.workspace))
+      ? displayDir(app.currentPath, app.homeDir)
+      : null,
+  );
 
   const viewModes: { mode: ViewMode; label: string; icon: typeof BookOpen }[] = [
     { mode: "preview", label: "Reading (⌘1)", icon: BookOpen },
@@ -59,7 +69,7 @@
 
   async function revealLibrary() {
     const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-    revealItemInDir(app.libraryRoot);
+    revealItemInDir(app.activeRoot);
   }
 </script>
 
@@ -139,6 +149,14 @@
           {app.currentPath ? docStem() : "Inky"}
         </button>
       {/if}
+      {#if outsideDir}
+        <span
+          class="max-w-56 shrink truncate text-xs text-muted-foreground/80"
+          title={app.currentPath}
+        >
+          {outsideDir}
+        </span>
+      {/if}
       {#if app.dirty}
         <span class="size-1.5 shrink-0 rounded-full bg-muted-foreground" title="Unsaved changes"></span>
       {/if}
@@ -200,7 +218,7 @@
             variant="ghost"
             size="icon"
             class="relative {app.commentsVisible ? 'bg-accent' : ''}"
-            disabled={!app.currentPath || app.isMermaidDoc}
+            disabled={!app.currentPath || app.isMermaidDoc || !app.docSidecars}
             onclick={() => app.toggleComments()}
           >
             <MessageSquareText class="size-4" />
@@ -214,7 +232,9 @@
           </Button>
         {/snippet}
       </Tooltip.Trigger>
-      <Tooltip.Content>Comments (⌘⇧C)</Tooltip.Content>
+      <Tooltip.Content>
+        {app.docSidecars ? "Comments (⌘⇧C)" : "Not available for files outside the library"}
+      </Tooltip.Content>
     </Tooltip.Root>
 
     <Tooltip.Root>
@@ -225,14 +245,16 @@
             variant="ghost"
             size="icon"
             class={app.historyVisible ? "bg-accent" : ""}
-            disabled={!app.currentPath}
+            disabled={!app.currentPath || !app.docSidecars}
             onclick={() => (app.historyVisible = true)}
           >
             <History class="size-4" />
           </Button>
         {/snippet}
       </Tooltip.Trigger>
-      <Tooltip.Content>Version history (⌘Y)</Tooltip.Content>
+      <Tooltip.Content>
+        {app.docSidecars ? "Version history (⌘Y)" : "Not available for files outside the library"}
+      </Tooltip.Content>
     </Tooltip.Root>
 
     <Tooltip.Root>
@@ -439,7 +461,7 @@
           Print… <DropdownMenu.Shortcut>⌘P</DropdownMenu.Shortcut>
         </DropdownMenu.Item>
         <DropdownMenu.Item
-          disabled={!app.currentPath}
+          disabled={!app.currentPath || !app.docSidecars}
           onclick={() => (app.historyVisible = true)}
         >
           Version history…
