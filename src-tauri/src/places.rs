@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Where a path lives, and the handle to operate on it with.
 pub struct Place {
-    pub lib: Library,
+    lib: Library,
     /// `Some` for a single granted file: `lib` is rooted at its folder, but
     /// only this file may be touched.
     file: Option<PathBuf>,
@@ -19,6 +19,18 @@ pub struct Place {
 impl Place {
     pub fn sidecars(&self) -> bool {
         self.lib.has_sidecars()
+    }
+
+    /// The handle for operating on `path`. A single granted file only
+    /// answers for itself — its handle is rooted at the parent folder, so
+    /// every other path is refused here.
+    pub fn doc(&self, path: &str) -> Result<&Library, String> {
+        if let Some(file) = &self.file {
+            if self.lib.resolve(path)? != *file {
+                return Err(format!("Not an open document: {path}"));
+            }
+        }
+        Ok(&self.lib)
     }
 
     pub fn folder(&self) -> Result<&Library, String> {
@@ -115,10 +127,18 @@ impl Places {
     /// Resolve `href` relative to an accessible document; Markdown targets
     /// outside every place are granted so the link can be opened.
     pub fn follow_link(&mut self, library: &Library, from_doc: &str, href: &str) -> Result<LinkTarget, String> {
-        let from = self.find(library, from_doc)?.lib.resolve(from_doc)?;
+        let place = self.find(library, from_doc)?;
+        let lib = place.doc(from_doc)?;
+        let from = lib.resolve(from_doc)?;
+        let text = lib.read(from_doc)?;
+        if href.is_empty() || !text.contains(href) {
+            return Err(format!("Not a link in this document: {href}"));
+        }
         let dir = from.parent().ok_or("invalid path")?;
+        let end = href.find(['#', '?']).unwrap_or(href.len());
+        let decoded = percent_decode(&href[..end]).ok_or_else(|| format!("Linked file not found: {href}"))?;
         let target = dir
-            .join(href)
+            .join(decoded)
             .canonicalize()
             .map_err(|_| format!("Linked file not found: {href}"))?;
         let path = target.to_string_lossy().into_owned();
@@ -132,6 +152,23 @@ impl Places {
     }
 }
 
+
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
 
 #[cfg(test)]
 mod tests {
@@ -180,7 +217,7 @@ mod tests {
         let place = places.find(&f.library, &s(&a)).unwrap();
         assert!(!place.sidecars());
         assert!(place.folder().is_err(), "a single file is not a folder place");
-        place.lib.write(&s(&a), "A2").unwrap();
+        place.doc(&s(&a)).unwrap().write(&s(&a), "A2").unwrap();
         assert_eq!(fs::read_to_string(&a).unwrap(), "A2");
         assert!(!f.outside.join(crate::library::HISTORY_DIR).exists());
     }
@@ -279,7 +316,7 @@ mod tests {
         let mut places = Places::default();
         let a = places.grant_file(&f.outside.join("a.md")).unwrap();
         let place = places.find(&f.library, &s(&a)).unwrap();
-        let z = place.lib.rename(&s(&a), "z.md").unwrap();
+        let z = place.doc(&s(&a)).unwrap().rename(&s(&a), "z.md").unwrap();
         places.renamed(&a, &z);
         assert!(places.find(&f.library, &s(&z)).is_ok());
         assert!(places.find(&f.library, &s(&a)).is_err());
@@ -289,6 +326,7 @@ mod tests {
     fn follow_link_grants_markdown_targets_only() {
         let f = fixture();
         let mut places = Places::default();
+        fs::write(f.outside.join("a.md"), "[b](b.md) [t](notes.txt) [m](missing.md)").unwrap();
         let a = places.grant_file(&f.outside.join("a.md")).unwrap();
         let t = places.follow_link(&f.library, &s(&a), "b.md").unwrap();
         assert!(t.doc);
@@ -315,10 +353,45 @@ mod tests {
     fn follow_link_inside_library_does_not_grant() {
         let f = fixture();
         fs::write(f.library.root().join("other.md"), "O").unwrap();
+        fs::write(f.library.root().join("in.md"), "[o](other.md)").unwrap();
         let mut places = Places::default();
         let from = s(&f.library.root().join("in.md"));
         let t = places.follow_link(&f.library, &from, "other.md").unwrap();
         assert!(t.doc);
         assert!(places.find(&f.library, &t.path).unwrap().sidecars());
+    }
+
+    #[test]
+    fn follow_link_refuses_hrefs_not_in_the_document() {
+        let f = fixture();
+        let mut places = Places::default();
+        fs::write(f.outside.join("a.md"), "[b](b.md)").unwrap();
+        let a = s(&places.grant_file(&f.outside.join("a.md")).unwrap());
+        assert!(places.follow_link(&f.library, &a, "/abs/elsewhere.md").is_err());
+        assert!(places.follow_link(&f.library, &a, "../x/b.md").is_err());
+        assert!(places.find(&f.library, &s(&f.outside.join("b.md"))).is_err());
+    }
+
+    #[test]
+    fn follow_link_strips_fragment_and_decodes() {
+        let f = fixture();
+        let mut places = Places::default();
+        fs::write(f.outside.join("My Notes.md"), "N").unwrap();
+        fs::write(f.outside.join("a.md"), "[n](My%20Notes.md#intro)").unwrap();
+        let a = s(&places.grant_file(&f.outside.join("a.md")).unwrap());
+        let t = places.follow_link(&f.library, &a, "My%20Notes.md#intro").unwrap();
+        assert!(t.doc);
+        assert!(t.path.ends_with("My Notes.md"));
+        assert!(places.find(&f.library, &t.path).is_ok());
+    }
+
+    #[test]
+    fn single_file_place_refuses_other_paths() {
+        let f = fixture();
+        let mut places = Places::default();
+        let a = s(&places.grant_file(&f.outside.join("a.md")).unwrap());
+        let place = places.find(&f.library, &a).unwrap();
+        assert!(place.doc(&s(&f.outside.join("b.md"))).is_err());
+        assert!(place.doc(&a).is_ok());
     }
 }
