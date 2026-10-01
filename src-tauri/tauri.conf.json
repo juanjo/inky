@@ -43,6 +43,21 @@
     "active": true,
     "targets": ["app", "dmg"],
     "createUpdaterArtifacts": true,
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown Document",
+        "description": "Markdown document",
+        "role": "Editor",
+        "mimeType": "text/markdown"
+      },
+      {
+        "ext": ["mmd"],
+        "name": "Mermaid Diagram",
+        "description": "Mermaid diagram",
+        "role": "Editor"
+      }
+    ],
     "category": "Productivity",
     "shortDescription": "A pleasant markdown reader and editor",
     "icon": [

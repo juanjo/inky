@@ -4,6 +4,7 @@ use tauri::Manager;
 
 pub mod library;
 pub mod mcp;
+pub mod opens;
 pub mod places;
 pub mod recents;
 
@@ -82,6 +83,53 @@ fn update_recents(app: &tauri::AppHandle, f: impl FnOnce(&mut Vec<String>)) {
 
 /// Keeps the Open Recent menu and Dock list in sync (filled in by Task 6).
 fn on_recents_changed(_app: &tauri::AppHandle) {}
+
+use opens::{OpenQueue, OpenRequest};
+
+struct PendingOpens(std::sync::Mutex<OpenQueue>);
+
+/// Files become granted documents, folders become the workspace. A file that
+/// is already in the library (or workspace) is opened as such — no grant.
+fn handle_open_paths(app: &tauri::AppHandle, paths: Vec<PathBuf>) {
+    use tauri::Emitter;
+    for path in paths {
+        let req = if path.is_dir() {
+            let root = app.state::<AppPlaces>().0.lock().unwrap().set_workspace(&path);
+            let Ok(root) = root else { continue };
+            start_watcher(app);
+            OpenRequest::Folder { path: to_string(root) }
+        } else if library::is_doc(&path) {
+            let Ok(canonical) = path.canonicalize() else { continue };
+            let canon = to_string(canonical.clone());
+            let reachable = place(app, &canon).is_ok();
+            if !reachable
+                && app.state::<AppPlaces>().0.lock().unwrap().grant_file(&canonical).is_err()
+            {
+                continue;
+            }
+            OpenRequest::File { path: canon }
+        } else {
+            continue;
+        };
+        let emit_now = app.state::<PendingOpens>().0.lock().unwrap().push(req);
+        if let Some(req) = emit_now {
+            let _ = app.emit("open-request", req);
+        }
+    }
+}
+
+#[tauri::command]
+fn take_pending_opens(state: tauri::State<PendingOpens>) -> Vec<OpenRequest> {
+    state.0.lock().unwrap().drain()
+}
+
+/// Paths passed on a command line (`Inky <path>…`), resolved against `cwd`.
+fn paths_from_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<PathBuf> {
+    args.into_iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(|a| cwd.join(a))
+        .collect()
+}
 
 #[tauri::command]
 fn library_root(app: tauri::AppHandle) -> Result<String, String> {
@@ -703,12 +751,13 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     use tauri::Emitter;
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Second launch: focus the existing window instead.
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            // Second launch: focus the existing window, open any paths given.
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
+            handle_open_paths(app, paths_from_args(args.into_iter().skip(1), Path::new(&cwd)));
         }))
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
@@ -718,12 +767,16 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(McpServer(std::sync::Mutex::new(None)))
         .manage(AppPlaces(std::sync::Mutex::new(Places::default())))
+        .manage(PendingOpens(std::sync::Mutex::new(OpenQueue::default())))
         .manage(LibraryWatcher(std::sync::Mutex::new(None)))
         .manage(UndoStash(std::sync::Mutex::new(std::collections::HashMap::new())))
         .setup(|app| {
             build_menu(app)?;
             purge_stash_dir(app.handle());
             start_watcher(app.handle());
+            if let Ok(cwd) = std::env::current_dir() {
+                handle_open_paths(app.handle(), paths_from_args(std::env::args().skip(1), &cwd));
+            }
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -757,6 +810,7 @@ pub fn run() {
             note_recent,
             recent_docs,
             open_recent,
+            take_pending_opens,
             quit_app,
             start_mcp,
             stop_mcp,
@@ -767,10 +821,17 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::Exit => {
                 stop_mcp_server(&app_handle.state::<McpServer>());
                 purge_stash_dir(app_handle);
             }
+            // Finder double-click, "Open With", `open -a Inky …`, the `inky` CLI.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                let paths = urls.into_iter().filter_map(|u| u.to_file_path().ok()).collect();
+                handle_open_paths(app_handle, paths);
+            }
+            _ => {}
         });
 }
