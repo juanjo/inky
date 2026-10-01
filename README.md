@@ -159,7 +159,8 @@ needed. It exposes `list_documents`, `read_document`, `write_document`,
 `patch_document`, `rename_document`, `move_document`, `create_folder`,
 `delete_document`, `search_documents`, history tools (`list_versions`,
 `read_version`) and comment tools (`list_comments`, `create_comment`,
-`reply_to_comment`, `resolve_comment`), plus every document as an
+`reply_to_comment`, `resolve_comment`), `open_document` (shows a document in
+the Inky app), plus every document as an
 `inky://doc/…` resource. The library folder is resolved from `INKY_LIBRARY`,
 then the app's config (`~/Library/Application Support/com.inky.app/config.json`),
 then `~/Documents/Inky` — so the app and agents always see the same documents.

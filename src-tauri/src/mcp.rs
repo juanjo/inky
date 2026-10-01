@@ -16,17 +16,38 @@ use tokio_util::sync::CancellationToken;
 
 pub const TOOL_SUMMARY: &str = "list_documents, read_document, write_document, patch_document, \
 rename_document, move_document, create_folder, delete_document, search_documents, \
-list_versions, read_version, list_comments, create_comment, reply_to_comment, resolve_comment";
+list_versions, read_version, list_comments, create_comment, reply_to_comment, resolve_comment, \
+open_document";
 
 const INSTRUCTIONS: &str = "Inky is the user's markdown library. Paths are relative to the library root. \
-Prefer patch_document over write_document for edits. Comment threads marked open usually need an answer; \
+Prefer patch_document over write_document for edits. Use open_document to show the user a document \
+(e.g. one you just wrote) in the Inky app. Comment threads marked open usually need an answer; \
 resolve a thread only after addressing it.";
 
 const DOC_URI_PREFIX: &str = "inky://doc/";
 
+/// Shows a document in the Inky app (swapped out in tests).
+pub type Opener = std::sync::Arc<dyn Fn(&std::path::Path) -> Result<(), String> + Send + Sync>;
+
+/// Hand the file to Inky through macOS `open`, exactly like a Finder
+/// double-click — works from the in-app server and from `Inky --mcp` alike.
+fn open_in_app(path: &std::path::Path) -> Result<(), String> {
+    let status = std::process::Command::new("open")
+        .args(["-b", "com.inky.app"])
+        .arg(path)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Could not open the document in Inky — is Inky installed?".into())
+    }
+}
+
 #[derive(Clone)]
 pub struct InkyMcp {
     lib: Library,
+    opener: Opener,
     tool_router: ToolRouter<Self>,
 }
 
@@ -184,8 +205,30 @@ impl InkyMcp {
     pub fn new(lib: Library) -> Self {
         Self {
             lib: lib.with_agent_origin(),
+            opener: std::sync::Arc::new(open_in_app),
             tool_router: Self::tool_router(),
         }
+    }
+
+    pub fn with_opener(mut self, opener: Opener) -> Self {
+        self.opener = opener;
+        self
+    }
+
+    #[tool(
+        name = "open_document",
+        annotations(title = "Show a document in Inky", read_only_hint = true),
+        description = "Open a document from the Inky library in the Inky app so the user sees it (launches Inky if needed). Use it after writing or editing a document the user should look at. The user can go back to what they were reading with ⌘[."
+    )]
+    async fn open_document(&self, Parameters(p): Parameters<PathParams>) -> CallToolResult {
+        let result = self.lib.resolve(&p.path).and_then(|abs| {
+            if !abs.is_file() || !library::is_doc(&abs) {
+                return Err(format!("Not a document in the Inky library: {}", p.path));
+            }
+            (self.opener)(&abs)?;
+            Ok(format!("Opened {} in Inky", p.path))
+        });
+        reply(result)
     }
 
     #[tool(
@@ -720,7 +763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_all_fifteen_tools() {
+    async fn lists_every_tool() {
         let f = fixture().await;
         let tools = f.client.list_tools(None).await.unwrap();
         let mut names: Vec<String> = tools.tools.iter().map(|t| t.name.to_string()).collect();
@@ -728,6 +771,49 @@ mod tests {
         let mut expected: Vec<String> = TOOL_SUMMARY.split(',').map(|s| s.trim().to_string()).collect();
         expected.sort();
         assert_eq!(names, expected);
+        f.server.abort();
+    }
+
+    /// A server whose `open_document` records paths instead of launching Inky.
+    async fn fixture_recording_opens() -> (Fixture, std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>) {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(dir.path()).unwrap();
+        let opened = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = opened.clone();
+        let handler = InkyMcp::new(lib.clone()).with_opener(std::sync::Arc::new(move |p: &std::path::Path| {
+            log.lock().unwrap().push(p.to_path_buf());
+            Ok(())
+        }));
+        let (server_io, client_io) = tokio::io::duplex(1 << 16);
+        let server = tokio::spawn(async move {
+            let s = handler.serve(server_io).await.unwrap();
+            s.waiting().await.ok();
+        });
+        let client = ().serve(client_io).await.unwrap();
+        (Fixture { _dir: dir, lib, client, server }, opened)
+    }
+
+    #[tokio::test]
+    async fn open_document_shows_a_library_document_in_the_app() {
+        let (f, opened) = fixture_recording_opens().await;
+        f.lib.write("Notes/a b.md", "x").unwrap();
+        let (err, msg) = call(&f, "open_document", serde_json::json!({"path": "Notes/a b.md"})).await;
+        assert!(!err, "{msg}");
+        assert!(msg.contains("Notes/a b.md"), "{msg}");
+        assert_eq!(*opened.lock().unwrap(), vec![f.lib.root().join("Notes/a b.md")]);
+        f.server.abort();
+    }
+
+    #[tokio::test]
+    async fn open_document_refuses_anything_but_existing_library_documents() {
+        let (f, opened) = fixture_recording_opens().await;
+        f.lib.write("a.md", "x").unwrap();
+        std::fs::write(f.lib.root().join("notes.txt"), "t").unwrap();
+        for path in ["../outside.md", "/etc/hosts", "notes.txt", "missing.md", "", "."] {
+            let (err, msg) = call(&f, "open_document", serde_json::json!({ "path": path })).await;
+            assert!(err, "{path:?} should be refused, got {msg}");
+        }
+        assert!(opened.lock().unwrap().is_empty(), "nothing may be opened");
         f.server.abort();
     }
 
