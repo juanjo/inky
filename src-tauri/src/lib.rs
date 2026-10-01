@@ -54,6 +54,35 @@ fn to_string(p: PathBuf) -> String {
     p.to_string_lossy().into_owned()
 }
 
+use places::{LinkTarget, Place, Places};
+
+/// Workspace folder + granted outside files (see `places`). App-only: the
+/// MCP server never sees this.
+struct AppPlaces(std::sync::Mutex<Places>);
+
+fn place(app: &tauri::AppHandle, path: &str) -> Result<Place, String> {
+    let lib = open_library(app)?;
+    app.state::<AppPlaces>().0.lock().unwrap().find(&lib, path)
+}
+
+/// The library, or the workspace while one is showing.
+fn active_library(app: &tauri::AppHandle) -> Result<Library, String> {
+    let lib = open_library(app)?;
+    let state = app.state::<AppPlaces>();
+    let places = state.0.lock().unwrap();
+    Ok(places.active(&lib).clone())
+}
+
+fn update_recents(app: &tauri::AppHandle, f: impl FnOnce(&mut Vec<String>)) {
+    let mut config = read_config(app);
+    f(&mut config.recent);
+    let _ = write_config(app, &config);
+    on_recents_changed(app);
+}
+
+/// Keeps the Open Recent menu and Dock list in sync (filled in by Task 6).
+fn on_recents_changed(_app: &tauri::AppHandle) {}
+
 #[tauri::command]
 fn library_root(app: tauri::AppHandle) -> Result<String, String> {
     Ok(open_library(&app)?.root().to_string_lossy().into_owned())
@@ -69,32 +98,37 @@ fn set_library_root(app: tauri::AppHandle, path: String) -> Result<String, Strin
 
 #[tauri::command]
 fn list_tree(app: tauri::AppHandle) -> Result<Vec<Node>, String> {
-    Ok(open_library(&app)?.tree())
+    Ok(active_library(&app)?.tree())
 }
 
 #[tauri::command]
 fn read_doc(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    open_library(&app)?.read(&path)
+    place(&app, &path)?.doc(&path)?.read(&path)
 }
 
 #[tauri::command]
 fn write_doc(app: tauri::AppHandle, path: String, content: String) -> Result<(), String> {
-    open_library(&app)?.write(&path, &content)
+    place(&app, &path)?.doc(&path)?.write(&path, &content)
+}
+
+#[tauri::command]
+fn doc_sidecars(app: tauri::AppHandle, path: String) -> Result<bool, String> {
+    Ok(place(&app, &path)?.sidecars())
 }
 
 #[tauri::command]
 fn list_versions(app: tauri::AppHandle, path: String) -> Result<Vec<VersionInfo>, String> {
-    open_library(&app)?.list_versions(&path)
+    place(&app, &path)?.doc(&path)?.list_versions(&path)
 }
 
 #[tauri::command]
 fn read_version(app: tauri::AppHandle, path: String, version: String) -> Result<String, String> {
-    open_library(&app)?.read_version(&path, &version)
+    place(&app, &path)?.doc(&path)?.read_version(&path, &version)
 }
 
 #[tauri::command]
 fn search_library(app: tauri::AppHandle, query: String) -> Result<Vec<SearchHit>, String> {
-    Ok(open_library(&app)?.search(&query))
+    Ok(active_library(&app)?.search(&query))
 }
 
 #[tauri::command]
@@ -105,27 +139,34 @@ fn create_doc(
     ext: String,
     content: String,
 ) -> Result<String, String> {
-    open_library(&app)?.create_doc_unique(&dir, &name, &ext, &content).map(to_string)
+    place(&app, &dir)?.folder()?.create_doc_unique(&dir, &name, &ext, &content).map(to_string)
 }
 
 #[tauri::command]
 fn create_folder(app: tauri::AppHandle, dir: String, name: String) -> Result<String, String> {
-    open_library(&app)?.create_folder_unique(&dir, &name).map(to_string)
+    place(&app, &dir)?.folder()?.create_folder_unique(&dir, &name).map(to_string)
 }
 
 #[tauri::command]
 fn rename_path(app: tauri::AppHandle, path: String, new_name: String) -> Result<String, String> {
-    open_library(&app)?.rename(&path, &new_name).map(to_string)
+    let p = place(&app, &path)?;
+    let lib = p.doc(&path)?;
+    let old = lib.resolve(&path)?;
+    let new = lib.rename(&path, &new_name)?;
+    app.state::<AppPlaces>().0.lock().unwrap().renamed(&old, &new);
+    let (from, to) = (to_string(old), to_string(new.clone()));
+    update_recents(&app, |r| recents::rename(r, &from, &to));
+    Ok(to_string(new))
 }
 
 #[tauri::command]
 fn read_comments(app: tauri::AppHandle, doc_path: String) -> Result<String, String> {
-    open_library(&app)?.raw_comments(&doc_path)
+    place(&app, &doc_path)?.doc(&doc_path)?.raw_comments(&doc_path)
 }
 
 #[tauri::command]
 fn write_comments(app: tauri::AppHandle, doc_path: String, json: String) -> Result<(), String> {
-    open_library(&app)?.write_raw_comments(&doc_path, &json)
+    place(&app, &doc_path)?.doc(&doc_path)?.write_raw_comments(&doc_path, &json)
 }
 
 /// Returns an undo token while the delete is parked in the stash; `None` when
@@ -137,21 +178,80 @@ fn delete_path(
     state: tauri::State<UndoStash>,
     path: String,
 ) -> Result<Option<String>, String> {
-    let lib = open_library(&app)?;
-    match stash_root(&app).and_then(|root| lib.stash_delete(&path, &root)) {
+    let p = place(&app, &path)?;
+    let lib = p.folder()?;
+    let abs = to_string(lib.resolve(&path)?);
+    let result = match stash_root(&app).and_then(|root| lib.stash_delete(&path, &root)) {
         Ok(entry) => {
             let token = entry.token.clone();
             state.0.lock().unwrap().insert(token.clone(), entry);
             Ok(Some(token))
         }
         Err(_) => lib.delete(&path).map(|_| None),
+    };
+    if result.is_ok() {
+        update_recents(&app, |r| recents::forget(r, &abs));
     }
+    result
 }
 
 /// Move a file or folder into another folder inside the library.
 #[tauri::command]
 fn move_path(app: tauri::AppHandle, path: String, target_dir: String) -> Result<String, String> {
-    open_library(&app)?.move_into(&path, &target_dir).map(to_string)
+    let p = place(&app, &path)?;
+    let lib = p.folder()?;
+    let old = to_string(lib.resolve(&path)?);
+    let new = to_string(lib.move_into(&path, &target_dir)?);
+    update_recents(&app, |r| recents::rename(r, &old, &new));
+    Ok(new)
+}
+
+#[tauri::command]
+fn workspace_root(app: tauri::AppHandle) -> Option<String> {
+    let state = app.state::<AppPlaces>();
+    let places = state.0.lock().unwrap();
+    places.workspace().map(|l| to_string(l.root().to_path_buf()))
+}
+
+/// Back to Library. `keep` is the open document, which stays editable.
+#[tauri::command]
+fn clear_workspace(app: tauri::AppHandle, keep: Option<String>) {
+    app.state::<AppPlaces>().0.lock().unwrap().clear_workspace(keep.as_deref());
+    start_watcher(&app);
+}
+
+#[tauri::command]
+fn follow_link(app: tauri::AppHandle, from_doc: String, href: String) -> Result<LinkTarget, String> {
+    let lib = open_library(&app)?;
+    app.state::<AppPlaces>().0.lock().unwrap().follow_link(&lib, &from_doc, &href)
+}
+
+/// Record a successful open. Only documents the app can already reach are
+/// accepted, so this can't be used to smuggle in a grant via `open_recent`.
+#[tauri::command]
+fn note_recent(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let abs = to_string(place(&app, &path)?.doc(&path)?.resolve(&path)?);
+    update_recents(&app, |r| recents::push(r, &abs));
+    Ok(())
+}
+
+#[tauri::command]
+fn recent_docs(app: tauri::AppHandle) -> Vec<String> {
+    recents::existing(&read_config(&app).recent)
+}
+
+/// Re-open a document from the recents list, granting it if it lives outside
+/// the library. Paths not in the persisted list are refused.
+#[tauri::command]
+fn open_recent(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    if !read_config(&app).recent.contains(&path) {
+        return Err("Not a recent document".into());
+    }
+    if let Ok(p) = place(&app, &path) {
+        return Ok(to_string(p.doc(&path)?.resolve(&path)?));
+    }
+    let granted = app.state::<AppPlaces>().0.lock().unwrap().grant_file(Path::new(&path))?;
+    Ok(to_string(granted))
 }
 
 #[tauri::command]
@@ -172,7 +272,7 @@ fn save_image(
     if !["png", "jpg", "jpeg", "gif", "webp"].contains(&ext.as_str()) {
         return Err("unsupported image type".into());
     }
-    let doc = open_library(&app)?.resolve(&doc_path)?;
+    let doc = place(&app, &doc_path)?.doc(&doc_path)?.resolve(&doc_path)?;
     let dir = doc.parent().ok_or("no parent")?.join("assets");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -190,7 +290,7 @@ fn save_image(
 
 #[tauri::command]
 fn doc_mtime(app: tauri::AppHandle, path: String) -> Result<u64, String> {
-    open_library(&app)?.mtime(&path)
+    place(&app, &path)?.doc(&path)?.mtime(&path)
 }
 
 #[tauri::command]
@@ -207,7 +307,8 @@ struct LibraryWatcher(std::sync::Mutex<Option<notify_debouncer_mini::Debouncer<n
 fn start_watcher(app: &tauri::AppHandle) {
     use tauri::Emitter;
     let state = app.state::<LibraryWatcher>();
-    let Ok(lib) = open_library(app) else { return };
+    state.0.lock().unwrap().take();
+    let Ok(lib) = active_library(app) else { return };
     let handle = app.clone();
     let debouncer = notify_debouncer_mini::new_debouncer(
         std::time::Duration::from_millis(400),
@@ -616,6 +717,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(McpServer(std::sync::Mutex::new(None)))
+        .manage(AppPlaces(std::sync::Mutex::new(Places::default())))
         .manage(LibraryWatcher(std::sync::Mutex::new(None)))
         .manage(UndoStash(std::sync::Mutex::new(std::collections::HashMap::new())))
         .setup(|app| {
@@ -648,6 +750,13 @@ pub fn run() {
             list_versions,
             read_version,
             doc_mtime,
+            doc_sidecars,
+            workspace_root,
+            clear_workspace,
+            follow_link,
+            note_recent,
+            recent_docs,
+            open_recent,
             quit_app,
             start_mcp,
             stop_mcp,
