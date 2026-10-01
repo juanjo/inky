@@ -55,6 +55,9 @@ A `Places` state held by the app:
     (`.md`/`.markdown`/`.mmd`). Following a relative link from an outside
     document therefore keeps working. Other file types keep today's behavior
     (reveal in Finder).
+    The "href occurs in the document" check is a guard against stray grants,
+    not a security boundary — the webview can write documents — so link
+    grants also refuse hidden folders and ~/Library.
 - **MCP:** `mcp.rs` keeps building its own `Library` from config. It never sees
   `Places`, so agents cannot reach outside files or the workspace.
 

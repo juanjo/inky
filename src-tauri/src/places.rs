@@ -4,6 +4,7 @@
 //! all the confinement. Grants are only ever created from Rust code paths.
 
 use crate::library::{is_doc, Library};
+use crate::opens::OpenRequest;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -52,6 +53,8 @@ pub struct LinkTarget {
 pub struct Places {
     workspace: Option<Library>,
     files: HashSet<PathBuf>,
+    /// The document the window last opened (see `set_current`).
+    current: Option<PathBuf>,
 }
 
 impl Places {
@@ -64,12 +67,20 @@ impl Places {
         self.workspace.as_ref().unwrap_or(library)
     }
 
+    /// Remember the open document, so replacing the workspace it lives in
+    /// keeps it editable.
+    pub fn set_current(&mut self, path: PathBuf) {
+        self.current = Some(path);
+    }
+
     pub fn set_workspace(&mut self, dir: &Path) -> Result<PathBuf, String> {
         if !dir.is_dir() {
             return Err(format!("Not a folder: {}", dir.display()));
         }
         let lib = Library::open(dir)?.without_sidecars();
         let root = lib.root().to_path_buf();
+        let current = self.current.as_ref().map(|p| p.to_string_lossy().into_owned());
+        self.close_workspace(current.as_deref());
         self.workspace = Some(lib);
         Ok(root)
     }
@@ -77,6 +88,12 @@ impl Places {
     /// Back to the library. `keep` (the open document) stays editable if it
     /// lives in the workspace being closed.
     pub fn clear_workspace(&mut self, keep: Option<&str>) {
+        self.close_workspace(keep);
+    }
+
+    /// Drop the workspace; `keep` becomes a single-file grant if it is a
+    /// Markdown document inside it.
+    fn close_workspace(&mut self, keep: Option<&str>) {
         if let (Some(ws), Some(keep)) = (self.workspace.take(), keep) {
             if let Ok(p) = ws.resolve(keep) {
                 if p.is_file() && is_doc(&p) {
@@ -93,6 +110,37 @@ impl Places {
         }
         self.files.insert(p.clone());
         Ok(p)
+    }
+
+    /// A path handed over by macOS (Finder, `open`, the CLI, the Rust Open
+    /// dialogs): a folder becomes the workspace, a Markdown file is opened —
+    /// granted only if no place reaches it already. Anything else: `None`.
+    pub fn open_path(&mut self, library: &Library, path: &Path) -> Option<OpenRequest> {
+        if path.is_dir() {
+            let root = self.set_workspace(path).ok()?;
+            return Some(OpenRequest::Folder { path: root.to_string_lossy().into_owned() });
+        }
+        if !is_doc(path) {
+            return None;
+        }
+        let canonical = path.canonicalize().ok()?;
+        let canon = canonical.to_string_lossy().into_owned();
+        if self.find(library, &canon).is_err() {
+            self.grant_file(&canonical).ok()?;
+        }
+        Some(OpenRequest::File { path: canon })
+    }
+
+    /// `open_recent`: only paths in the persisted `recent` list; reachable
+    /// ones pass through, outside ones are granted.
+    pub fn grant_recent(&mut self, library: &Library, recent: &[String], path: &str) -> Result<PathBuf, String> {
+        if !recent.iter().any(|r| r == path) {
+            return Err("Not a recent document".into());
+        }
+        if let Ok(place) = self.find(library, path) {
+            return place.doc(path)?.resolve(path);
+        }
+        self.grant_file(Path::new(path))
     }
 
     pub fn find(&self, library: &Library, path: &str) -> Result<Place, String> {
@@ -127,6 +175,17 @@ impl Places {
     /// Resolve `href` relative to an accessible document; Markdown targets
     /// outside every place are granted so the link can be opened.
     pub fn follow_link(&mut self, library: &Library, from_doc: &str, href: &str) -> Result<LinkTarget, String> {
+        self.follow_link_from(library, from_doc, href, dirs::home_dir().as_deref())
+    }
+
+    /// `follow_link` with the home folder passed in (tests use a fake one).
+    fn follow_link_from(
+        &mut self,
+        library: &Library,
+        from_doc: &str,
+        href: &str,
+        home: Option<&Path>,
+    ) -> Result<LinkTarget, String> {
         let place = self.find(library, from_doc)?;
         let lib = place.doc(from_doc)?;
         let from = lib.resolve(from_doc)?;
@@ -144,16 +203,29 @@ impl Places {
             .canonicalize()
             .map_err(|_| format!("Linked file not found: {href}"))?;
         let path = target.to_string_lossy().into_owned();
+        let reachable = self.find(library, &path).is_ok();
+        if !reachable && off_limits(&target, home) {
+            return Err(format!("Linked file not found: {href}"));
+        }
         if !target.is_file() || !is_doc(&target) {
             return Ok(LinkTarget { path, doc: false });
         }
-        if self.find(library, &path).is_err() {
+        if !reachable {
             self.grant_file(&target)?;
         }
         Ok(LinkTarget { path, doc: true })
     }
 }
 
+/// Hidden folders and `~/Library` are never reached through a link grant:
+/// the "href occurs in the document" check is no security boundary, since
+/// the webview can write documents.
+fn off_limits(target: &Path, home: Option<&Path>) -> bool {
+    let hidden = target
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
+    hidden || home.is_some_and(|h| target.starts_with(h.join("Library")))
+}
 
 fn percent_decode(s: &str) -> Option<String> {
     let b = s.as_bytes();
@@ -185,8 +257,8 @@ mod tests {
 
     /// A library plus an unrelated "outside" folder with a.md, b.md, notes.txt.
     fn fixture() -> Fixture {
-        let lib_dir = tempfile::tempdir().unwrap();
-        let out_dir = tempfile::tempdir().unwrap();
+        let lib_dir = tempdir();
+        let out_dir = tempdir();
         let library = Library::open(lib_dir.path()).unwrap();
         let outside = out_dir.path().canonicalize().unwrap();
         fs::write(outside.join("a.md"), "A").unwrap();
@@ -194,6 +266,12 @@ mod tests {
         fs::write(outside.join("notes.txt"), "T").unwrap();
         fs::write(library.root().join("in.md"), "IN").unwrap();
         Fixture { _dirs: vec![lib_dir, out_dir], library, outside }
+    }
+
+    /// Not `tempfile::tempdir()`: its `.tmpXXXX` names are hidden folders,
+    /// which link grants refuse.
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new().prefix("inky-test").tempdir().unwrap()
     }
 
     fn s(p: &Path) -> String {
@@ -256,7 +334,7 @@ mod tests {
     #[test]
     fn granted_file_found_by_non_canonical_path() {
         let f = fixture();
-        let link_dir = tempfile::tempdir().unwrap();
+        let link_dir = tempdir();
         let link = link_dir.path().join("alias");
         std::os::unix::fs::symlink(&f.outside, &link).unwrap();
         let mut places = Places::default();
@@ -302,9 +380,24 @@ mod tests {
     }
 
     #[test]
+    fn replacing_workspace_keeps_current_doc_writable() {
+        let f = fixture();
+        let other = tempdir();
+        let mut places = Places::default();
+        places.set_workspace(&f.outside).unwrap();
+        let a = f.outside.join("a.md");
+        places.set_current(a.clone());
+        places.set_workspace(other.path()).unwrap();
+        let place = places.find(&f.library, &s(&a)).expect("open doc stays reachable");
+        place.doc(&s(&a)).unwrap().write(&s(&a), "A3").unwrap();
+        assert_eq!(fs::read_to_string(&a).unwrap(), "A3");
+        assert!(places.find(&f.library, &s(&f.outside.join("b.md"))).is_err());
+    }
+
+    #[test]
     fn clear_workspace_ignores_keep_outside_it() {
         let f = fixture();
-        let ws = tempfile::tempdir().unwrap();
+        let ws = tempdir();
         let mut places = Places::default();
         places.set_workspace(ws.path()).unwrap();
         // `keep` is not in the closing workspace, so it must not become a grant.
@@ -402,6 +495,113 @@ mod tests {
             .unwrap();
         assert!(t.doc);
         assert!(t.path.ends_with("sub/é Notes.md"));
+    }
+
+    #[test]
+    fn follow_link_refuses_hidden_folders_outside_places() {
+        let f = fixture();
+        let mut places = Places::default();
+        fs::create_dir(f.outside.join(".secret")).unwrap();
+        fs::write(f.outside.join(".secret/x.md"), "X").unwrap();
+        fs::write(f.outside.join(".secret/t.txt"), "T").unwrap();
+        fs::write(f.outside.join("a.md"), "[x](.secret/x.md) [t](.secret/t.txt)").unwrap();
+        let a = s(&places.grant_file(&f.outside.join("a.md")).unwrap());
+        assert!(places.follow_link(&f.library, &a, ".secret/x.md").is_err());
+        assert!(places.follow_link(&f.library, &a, ".secret/t.txt").is_err());
+        assert!(places.find(&f.library, &s(&f.outside.join(".secret/x.md"))).is_err());
+    }
+
+    #[test]
+    fn follow_link_refuses_home_library_outside_places() {
+        let f = fixture();
+        let mut places = Places::default();
+        // `outside` plays the home folder here.
+        fs::create_dir(f.outside.join("Library")).unwrap();
+        fs::write(f.outside.join("Library/x.md"), "X").unwrap();
+        fs::write(f.outside.join("a.md"), "[x](Library/x.md) [b](b.md)").unwrap();
+        let a = s(&places.grant_file(&f.outside.join("a.md")).unwrap());
+        let home = Some(f.outside.as_path());
+        assert!(places.follow_link_from(&f.library, &a, "Library/x.md", home).is_err());
+        assert!(places.find(&f.library, &s(&f.outside.join("Library/x.md"))).is_err());
+        assert!(places.follow_link_from(&f.library, &a, "b.md", home).unwrap().doc);
+    }
+
+    #[test]
+    fn follow_link_reaches_hidden_folders_inside_places() {
+        let f = fixture();
+        fs::create_dir(f.library.root().join(".notes")).unwrap();
+        fs::write(f.library.root().join(".notes/x.md"), "X").unwrap();
+        fs::write(f.library.root().join("in.md"), "[x](.notes/x.md)").unwrap();
+        let mut places = Places::default();
+        let from = s(&f.library.root().join("in.md"));
+        let t = places.follow_link(&f.library, &from, ".notes/x.md").unwrap();
+        assert!(t.doc);
+        // Same for a workspace that is itself under ~/Library.
+        let home = f.outside.clone();
+        fs::create_dir_all(home.join("Library/ws")).unwrap();
+        fs::write(home.join("Library/ws/a.md"), "[b](b.md)").unwrap();
+        fs::write(home.join("Library/ws/b.md"), "B").unwrap();
+        places.set_workspace(&home.join("Library/ws")).unwrap();
+        let a = s(&home.join("Library/ws/a.md"));
+        assert!(places.follow_link_from(&f.library, &a, "b.md", Some(&home)).unwrap().doc);
+    }
+
+    #[test]
+    fn open_path_folder_becomes_the_workspace() {
+        let f = fixture();
+        let mut places = Places::default();
+        let req = places.open_path(&f.library, &f.outside);
+        assert_eq!(req, Some(OpenRequest::Folder { path: s(&f.outside) }));
+        assert_eq!(places.workspace().unwrap().root(), f.outside.as_path());
+    }
+
+    #[test]
+    fn open_path_outside_markdown_is_granted_alone() {
+        let f = fixture();
+        let mut places = Places::default();
+        let a = f.outside.join("a.md");
+        let req = places.open_path(&f.library, &a);
+        assert_eq!(req, Some(OpenRequest::File { path: s(&a) }));
+        assert!(places.find(&f.library, &s(&a)).is_ok());
+        assert!(places.find(&f.library, &s(&f.outside.join("b.md"))).is_err());
+        assert!(places.workspace().is_none());
+    }
+
+    #[test]
+    fn open_path_library_markdown_adds_no_grant() {
+        let f = fixture();
+        let mut places = Places::default();
+        let inside = f.library.root().join("in.md");
+        let req = places.open_path(&f.library, &inside);
+        assert_eq!(req, Some(OpenRequest::File { path: s(&inside) }));
+        assert!(places.files.is_empty(), "the library already reaches it");
+        assert!(places.find(&f.library, &s(&inside)).unwrap().sidecars());
+    }
+
+    #[test]
+    fn open_path_ignores_other_files_and_missing_paths() {
+        let f = fixture();
+        let mut places = Places::default();
+        assert_eq!(places.open_path(&f.library, &f.outside.join("notes.txt")), None);
+        assert_eq!(places.open_path(&f.library, &f.outside.join("missing.md")), None);
+        assert!(places.find(&f.library, &s(&f.outside.join("notes.txt"))).is_err());
+        assert!(places.workspace().is_none());
+    }
+
+    #[test]
+    fn grant_recent_only_grants_listed_paths() {
+        let f = fixture();
+        let mut places = Places::default();
+        let a = s(&f.outside.join("a.md"));
+        let b = s(&f.outside.join("b.md"));
+        let inside = s(&f.library.root().join("in.md"));
+        let recent = vec![a.clone(), inside.clone()];
+        assert!(places.grant_recent(&f.library, &recent, &b).is_err());
+        assert!(places.find(&f.library, &b).is_err());
+        assert_eq!(places.grant_recent(&f.library, &recent, &inside).unwrap(), PathBuf::from(&inside));
+        assert!(places.files.is_empty(), "library paths pass through without a grant");
+        assert_eq!(places.grant_recent(&f.library, &recent, &a).unwrap(), PathBuf::from(&a));
+        assert!(places.find(&f.library, &a).is_ok());
     }
 
     #[test]

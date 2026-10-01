@@ -81,7 +81,14 @@ fn update_recents(app: &tauri::AppHandle, f: impl FnOnce(&mut Vec<String>)) {
     on_recents_changed(app);
 }
 
-struct RecentMenu(std::sync::Mutex<Option<tauri::menu::Submenu<tauri::Wry>>>);
+/// File → Open Recent, plus the list its `open_recent:N` items index into.
+#[derive(Default)]
+struct RecentMenuState {
+    sub: Option<tauri::menu::Submenu<tauri::Wry>>,
+    list: Vec<String>,
+}
+
+struct RecentMenu(std::sync::Mutex<RecentMenuState>);
 
 /// "README.md — ~/repo" for the Open Recent menu.
 fn recent_label(path: &str, home: Option<&Path>) -> String {
@@ -101,14 +108,15 @@ fn recent_label(path: &str, home: Option<&Path>) -> String {
 fn on_recents_changed(app: &tauri::AppHandle) {
     use tauri::menu::{MenuItemBuilder, PredefinedMenuItem};
     let state = app.state::<RecentMenu>();
-    let guard = state.0.lock().unwrap();
-    let Some(sub) = guard.as_ref() else { return };
+    let mut guard = state.0.lock().unwrap();
+    let list = recents::existing(&read_config(app).recent);
+    guard.list = list.clone();
+    let Some(sub) = guard.sub.as_ref() else { return };
     if let Ok(items) = sub.items() {
         for item in items {
             let _ = sub.remove(&item);
         }
     }
-    let list = recents::existing(&read_config(app).recent);
     let home = app.path().home_dir().ok();
     if list.is_empty() {
         if let Ok(item) = MenuItemBuilder::with_id("recent_none", "No Recent Documents")
@@ -167,25 +175,14 @@ struct PendingOpens(std::sync::Mutex<OpenQueue>);
 /// is already in the library (or workspace) is opened as such — no grant.
 fn handle_open_paths(app: &tauri::AppHandle, paths: Vec<PathBuf>) {
     use tauri::Emitter;
+    let Ok(lib) = open_library(app) else { return };
     for path in paths {
-        let req = if path.is_dir() {
-            let root = app.state::<AppPlaces>().0.lock().unwrap().set_workspace(&path);
-            let Ok(root) = root else { continue };
+        // Guard dropped at the end of this statement, before the watcher and emit.
+        let req = app.state::<AppPlaces>().0.lock().unwrap().open_path(&lib, &path);
+        let Some(req) = req else { continue };
+        if matches!(req, OpenRequest::Folder { .. }) {
             start_watcher(app);
-            OpenRequest::Folder { path: to_string(root) }
-        } else if library::is_doc(&path) {
-            let Ok(canonical) = path.canonicalize() else { continue };
-            let canon = to_string(canonical.clone());
-            let reachable = place(app, &canon).is_ok();
-            if !reachable
-                && app.state::<AppPlaces>().0.lock().unwrap().grant_file(&canonical).is_err()
-            {
-                continue;
-            }
-            OpenRequest::File { path: canon }
-        } else {
-            continue;
-        };
+        }
         let emit_now = app.state::<PendingOpens>().0.lock().unwrap().push(req);
         if let Some(req) = emit_now {
             let _ = app.emit("open-request", req);
@@ -354,6 +351,8 @@ fn follow_link(app: tauri::AppHandle, from_doc: String, href: String) -> Result<
 #[tauri::command]
 fn note_recent(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let abs = to_string(place(&app, &path)?.doc(&path)?.resolve(&path)?);
+    // Guard dropped at the end of this statement, before `update_recents`.
+    app.state::<AppPlaces>().0.lock().unwrap().set_current(PathBuf::from(&abs));
     let a = abs.clone();
     update_recents(&app, |r| recents::push(r, &a));
     note_dock_recent(&app, abs);
@@ -369,13 +368,9 @@ fn recent_docs(app: tauri::AppHandle) -> Vec<String> {
 /// the library. Paths not in the persisted list are refused.
 #[tauri::command]
 fn open_recent(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    if !read_config(&app).recent.contains(&path) {
-        return Err("Not a recent document".into());
-    }
-    if let Ok(p) = place(&app, &path) {
-        return Ok(to_string(p.doc(&path)?.resolve(&path)?));
-    }
-    let granted = app.state::<AppPlaces>().0.lock().unwrap().grant_file(Path::new(&path))?;
+    let lib = open_library(&app)?;
+    let recent = read_config(&app).recent;
+    let granted = app.state::<AppPlaces>().0.lock().unwrap().grant_recent(&lib, &recent, &path)?;
     Ok(to_string(granted))
 }
 
@@ -624,35 +619,40 @@ fn print_document(window: tauri::WebviewWindow, save_path: Option<String>) -> Re
 const CLI_SCRIPT: &str = "#!/bin/sh\n# inky — open Markdown files or folders in Inky\nexec open -b com.inky.app \"$@\"\n";
 const CLI_PATH: &str = "/usr/local/bin/inky";
 
-fn shell_quote(p: &Path) -> String {
-    format!("'{}'", p.to_string_lossy().replace('\'', r"'\''"))
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The privileged shell command: writes `CLI_SCRIPT` straight to `CLI_PATH`.
+fn install_shell_command() -> String {
+    format!(
+        "mkdir -p /usr/local/bin && printf '%s' {} > {CLI_PATH} && chmod 755 {CLI_PATH}",
+        shell_quote(CLI_SCRIPT)
+    )
+}
+
+/// AppleScript that runs `sh` as root behind the system password prompt.
+fn applescript_admin(sh: &str) -> String {
+    format!(
+        "do shell script \"{}\" with administrator privileges",
+        sh.replace('\\', "\\\\").replace('"', "\\\"")
+    )
 }
 
 /// Install the `inky` command (one administrator prompt). Async so the
 /// password dialog doesn't block the main thread.
 #[tauri::command]
-async fn install_cli(app: tauri::AppHandle) -> Result<String, String> {
-    let tmp = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("inky-cli");
-    fs::create_dir_all(tmp.parent().unwrap()).map_err(|e| e.to_string())?;
-    fs::write(&tmp, CLI_SCRIPT).map_err(|e| e.to_string())?;
-    let sh = format!(
-        "mkdir -p /usr/local/bin && cp {} {CLI_PATH} && chmod 755 {CLI_PATH}",
-        shell_quote(&tmp)
-    );
-    let apple = format!(
-        "do shell script \"{}\" with administrator privileges",
-        sh.replace('\\', "\\\\").replace('"', "\\\"")
-    );
+async fn install_cli() -> Result<String, String> {
     let out = std::process::Command::new("osascript")
         .arg("-e")
-        .arg(apple)
+        .arg(applescript_admin(&install_shell_command()))
         .output()
         .map_err(|e| e.to_string())?;
     if out.status.success() {
-        Ok(CLI_PATH.into())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        return Ok(CLI_PATH.into());
     }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if err.is_empty() { "Could not install the command".into() } else { err })
 }
 
 /// Recursively find a check menu item by id and set its checked state.
@@ -872,7 +872,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         .items(&[&app_sub, &file_sub, &edit_sub, &view_sub, &window_sub])
         .build()?;
     app.set_menu(menu)?;
-    *app.state::<RecentMenu>().0.lock().unwrap() = Some(recent_sub);
+    app.state::<RecentMenu>().0.lock().unwrap().sub = Some(recent_sub);
     on_recents_changed(handle);
     Ok(())
 }
@@ -898,7 +898,7 @@ pub fn run() {
         .manage(McpServer(std::sync::Mutex::new(None)))
         .manage(AppPlaces(std::sync::Mutex::new(Places::default())))
         .manage(PendingOpens(std::sync::Mutex::new(OpenQueue::default())))
-        .manage(RecentMenu(std::sync::Mutex::new(None)))
+        .manage(RecentMenu(std::sync::Mutex::new(RecentMenuState::default())))
         .manage(LibraryWatcher(std::sync::Mutex::new(None)))
         .manage(UndoStash(std::sync::Mutex::new(std::collections::HashMap::new())))
         .setup(|app| {
@@ -936,9 +936,11 @@ pub fn run() {
                     clear_dock_recents(app);
                 }
                 _ if id.starts_with("open_recent:") => {
-                    let list = recents::existing(&read_config(app).recent);
+                    // Index the list the menu was built from; clone it out so
+                    // the guard is released before `handle_open_paths`.
                     let idx: usize = id["open_recent:".len()..].parse().unwrap_or(usize::MAX);
-                    if let Some(path) = list.get(idx) {
+                    let path = app.state::<RecentMenu>().0.lock().unwrap().list.get(idx).cloned();
+                    if let Some(path) = path {
                         handle_open_paths(app, vec![PathBuf::from(path)]);
                     }
                 }
@@ -1016,8 +1018,28 @@ mod tests {
 
     #[test]
     fn shell_quote_escapes_single_quotes() {
-        assert_eq!(shell_quote(Path::new("/a b/c")), "'/a b/c'");
-        assert_eq!(shell_quote(Path::new("/it's")), r"'/it'\''s'");
+        assert_eq!(shell_quote("/a b/c"), "'/a b/c'");
+        assert_eq!(shell_quote("/it's"), r"'/it'\''s'");
+    }
+
+    #[test]
+    fn applescript_admin_escapes_backslashes_then_quotes() {
+        let sh = r#"printf '%s' 'it'\''s "q" \n'"#;
+        assert_eq!(
+            applescript_admin(sh),
+            r#"do shell script "printf '%s' 'it'\\''s \"q\" \\n'" with administrator privileges"#
+        );
+    }
+
+    #[test]
+    fn install_command_writes_the_script_verbatim() {
+        let sh = install_shell_command();
+        assert!(sh.starts_with("mkdir -p /usr/local/bin && printf '%s' "));
+        assert!(sh.ends_with(&format!(" > {CLI_PATH} && chmod 755 {CLI_PATH}")));
+        // The quoted script, fed through a real shell, is the script itself.
+        let printf = &sh[sh.find("printf").unwrap()..sh.find(" > ").unwrap()];
+        let out = std::process::Command::new("sh").arg("-c").arg(printf).output().unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), CLI_SCRIPT);
     }
 
     #[test]
