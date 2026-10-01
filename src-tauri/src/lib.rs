@@ -4,6 +4,7 @@ use tauri::Manager;
 
 pub mod library;
 pub mod mcp;
+pub mod places;
 pub mod recents;
 
 use library::{Config, Library, Node, SearchHit, VersionInfo};
