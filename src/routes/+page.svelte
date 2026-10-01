@@ -5,6 +5,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { app } from "$lib/state.svelte";
   import { configureSync } from "$lib/scrollsync";
+  import { pinchScale } from "$lib/zoom";
   import type { ReadingWidth } from "$lib/state.svelte";
   import Toolbar from "$lib/components/Toolbar.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -75,8 +76,19 @@
     configureSync(() => app.syncScroll && app.viewMode === "split");
     const unlisten = listen<string>("menu", (e) => handleMenu(e.payload));
     app.init().then(() => (ready = true));
+    // Registered by hand: they must be non-passive to stop the webview's own
+    // pinch handling, and Svelte attaches wheel listeners as passive.
+    const opts = { passive: false };
+    window.addEventListener("wheel", onWheel, opts);
+    window.addEventListener("gesturestart", onGestureStart, opts);
+    window.addEventListener("gesturechange", onGestureChange, opts);
+    window.addEventListener("gestureend", onGestureEnd, opts);
     return () => {
       unlisten.then((fn) => fn());
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("gesturestart", onGestureStart);
+      window.removeEventListener("gesturechange", onGestureChange);
+      window.removeEventListener("gestureend", onGestureEnd);
     };
   });
 
@@ -106,10 +118,55 @@
     handle.addEventListener("pointerup", onUp);
   }
 
+  /** Typing surfaces where ⌘[ / ⌘] already mean outdent / indent. */
+  function inTextInput(target: EventTarget | null) {
+    return (
+      target instanceof HTMLElement &&
+      (target.isContentEditable || target.closest("input, textarea, .cm-editor") !== null)
+    );
+  }
+
+  // Trackpad pinch → text size. WebKit reports it as gesture events (with a
+  // cumulative scale) and, in some versions, also as ctrl+wheel; while a
+  // gesture is live the wheel copies are ignored so it isn't applied twice.
+  let pinchBase: number | null = null;
+
+  function onGestureStart(e: Event) {
+    e.preventDefault();
+    pinchBase = app.fontScale;
+  }
+
+  function onGestureChange(e: Event) {
+    e.preventDefault();
+    const scale = (e as Event & { scale?: number }).scale;
+    if (pinchBase !== null && scale) app.setFontScale(pinchBase * scale);
+  }
+
+  function onGestureEnd(e: Event) {
+    e.preventDefault();
+    pinchBase = null;
+  }
+
+  function onWheel(e: WheelEvent) {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    if (pinchBase === null) app.setFontScale(pinchScale(app.fontScale, e.deltaY));
+  }
+
+  /** Mouse side buttons (3 = back, 4 = forward). */
+  function onMouseUp(e: MouseEvent) {
+    if (e.button === 3) app.goBack();
+    else if (e.button === 4) app.goForward();
+  }
+
   function handleKeydown(event: KeyboardEvent) {
     if (!event.metaKey) return;
     const key = event.key.toLowerCase();
-    if (key === "s") {
+    if ((key === "[" || key === "]") && !event.shiftKey && !inTextInput(event.target)) {
+      event.preventDefault();
+      if (key === "[") app.goBack();
+      else app.goForward();
+    } else if (key === "s") {
       event.preventDefault();
       app.save();
     } else if (key === "n" && !event.shiftKey) {
@@ -164,7 +221,7 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onmouseup={onMouseUp} />
 
 <div class="print-root flex h-screen flex-col overflow-hidden">
   <Toolbar />

@@ -7,6 +7,8 @@
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
   import { Separator } from "$lib/components/ui/separator/index.js";
   import PanelLeft from "@lucide/svelte/icons/panel-left";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import BookOpen from "@lucide/svelte/icons/book-open";
   import Columns2 from "@lucide/svelte/icons/columns-2";
   import PenLine from "@lucide/svelte/icons/pen-line";
@@ -76,6 +78,39 @@
         {/snippet}
       </Tooltip.Trigger>
       <Tooltip.Content>Toggle sidebar (⌘B)</Tooltip.Content>
+    </Tooltip.Root>
+
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        {#snippet child({ props })}
+          <Button
+            {...props}
+            variant="ghost"
+            size="icon"
+            disabled={!app.canGoBack}
+            onclick={() => app.goBack()}
+          >
+            <ChevronLeft class="size-4" />
+          </Button>
+        {/snippet}
+      </Tooltip.Trigger>
+      <Tooltip.Content>Back (⌘[)</Tooltip.Content>
+    </Tooltip.Root>
+    <Tooltip.Root>
+      <Tooltip.Trigger>
+        {#snippet child({ props })}
+          <Button
+            {...props}
+            variant="ghost"
+            size="icon"
+            disabled={!app.canGoForward}
+            onclick={() => app.goForward()}
+          >
+            <ChevronRight class="size-4" />
+          </Button>
+        {/snippet}
+      </Tooltip.Trigger>
+      <Tooltip.Content>Forward (⌘])</Tooltip.Content>
     </Tooltip.Root>
 
     <div class="ml-1 flex min-w-0 items-center gap-2">

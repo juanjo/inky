@@ -110,6 +110,12 @@
         await renderMermaidBlocks(container, theme);
         resolveLocalImages();
         applyCommentHighlights();
+        // Back/forward: return to where the reader was (after diagrams have
+        // their final height).
+        if (app.pendingScroll !== null && scroller) {
+          scroller.scrollTop = app.pendingScroll;
+          app.pendingScroll = null;
+        }
       }
     });
   });
@@ -859,9 +865,11 @@
 
   onMount(() => {
     app.searchBackends.preview = { update: searchUpdate, goto: searchGoto, clear: searchClear };
+    app.previewScroller = scroller ?? null;
     const unregisterSync = scroller ? registerScroller("preview", scroller) : () => {};
     return () => {
       delete app.searchBackends.preview;
+      if (app.previewScroller === scroller) app.previewScroller = null;
       unregisterSync();
     };
   });

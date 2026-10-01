@@ -12,6 +12,16 @@ import { WELCOME_DOC, MERMAID_TEMPLATE } from "./templates";
 import { extractToc, type TocEntry } from "./markdown";
 import { lockSync } from "./scrollsync";
 import { newId, type CommentThread } from "./comments";
+import {
+  emptyHistory,
+  forgetPath,
+  goBack,
+  goForward,
+  recordVisit,
+  renamePath,
+  type NavEntry,
+} from "./navhistory";
+import { FONT_SCALES, clampScale, stepScale } from "./zoom";
 
 export type { CommentThread };
 export type CommentFilter = "all" | "open" | "resolved";
@@ -26,7 +36,7 @@ export type { TocEntry };
 
 const THEMES: ThemeName[] = ["light", "dark", "book"];
 
-export const FONT_SCALES = [0.85, 0.92, 1, 1.1, 1.2, 1.35, 1.5, 1.7] as const;
+export { FONT_SCALES };
 
 export const READING_WIDTHS = {
   default: { label: "Default", value: "58rem" },
@@ -69,6 +79,15 @@ class AppState {
   /** URL of the app-hosted MCP server while it's running. */
   mcpUrl = $state<string | null>(null);
   mcpSetupOpen = $state(false);
+
+  /** Back/forward between documents (link clicks, sidebar, quick open…). */
+  nav = $state(emptyHistory());
+  canGoBack = $derived(this.nav.back.length > 0);
+  canGoForward = $derived(this.nav.forward.length > 0);
+  /** Set by the Preview component while mounted. */
+  previewScroller: HTMLElement | null = null;
+  /** Scroll offset the next mounted Preview should restore (history nav). */
+  pendingScroll: number | null = null;
 
   /** Disk mtime of the open document at last read/write (conflict detection). */
   #docMtime: number | null = null;
@@ -124,9 +143,7 @@ class AppState {
     const storedView = localStorage.getItem("inky.viewMode") as ViewMode | null;
     if (storedView) this.viewMode = storedView;
     const storedScale = parseFloat(localStorage.getItem("inky.fontScale") ?? "");
-    if (FONT_SCALES.includes(storedScale as (typeof FONT_SCALES)[number])) {
-      this.fontScale = storedScale;
-    }
+    if (Number.isFinite(storedScale)) this.fontScale = clampScale(storedScale);
     const storedWidth = localStorage.getItem("inky.readingWidth") as ReadingWidth | null;
     if (storedWidth && storedWidth in READING_WIDTHS) this.readingWidth = storedWidth;
     this.tocVisible = localStorage.getItem("inky.tocVisible") === "true";
@@ -268,11 +285,22 @@ class AppState {
   }
 
   adjustFontScale(step: -1 | 1) {
-    const i = FONT_SCALES.indexOf(this.fontScale as (typeof FONT_SCALES)[number]);
-    const next = FONT_SCALES[Math.min(FONT_SCALES.length - 1, Math.max(0, i + step))];
+    this.setFontScale(stepScale(this.fontScale, step));
+  }
+
+  /** Change text size, keeping the reading position in the preview. */
+  setFontScale(scale: number) {
+    const next = clampScale(scale);
+    if (next === this.fontScale) return;
+    const el = this.previewScroller;
+    const frac = el && el.scrollHeight > 0 ? el.scrollTop / el.scrollHeight : null;
     this.fontScale = next;
     localStorage.setItem("inky.fontScale", String(next));
     this.applyReadingPrefs();
+    if (el && frac !== null) {
+      lockSync(100);
+      el.scrollTop = frac * el.scrollHeight;
+    }
   }
 
   setReadingWidth(width: ReadingWidth) {
@@ -497,6 +525,7 @@ class AppState {
   async movePath(path: string, targetDir: string) {
     try {
       const newPath = await invoke<string>("move_path", { path, targetDir });
+      renamePath(this.nav, path, newPath);
       if (this.currentPath === path) {
         this.currentPath = newPath;
         localStorage.setItem("inky.lastDoc", newPath);
@@ -571,10 +600,32 @@ class AppState {
     }
   }
 
-  async openDoc(path: string, opts: { silent?: boolean } = {}) {
+  /** Where the reader is right now, for the back/forward stacks. */
+  #here(): NavEntry | null {
+    if (!this.currentPath) return null;
+    const scroller =
+      this.viewMode === "editor" ? this.editorView?.scrollDOM : this.previewScroller;
+    return { path: this.currentPath, scroll: scroller?.scrollTop ?? 0 };
+  }
+
+  /**
+   * Open a document. Unless `restoreScroll` is given (history navigation),
+   * the document being left is pushed onto the back stack.
+   */
+  async openDoc(
+    path: string,
+    opts: { silent?: boolean; restoreScroll?: number } = {},
+  ): Promise<boolean> {
     if (this.dirty) await this.save();
+    const leaving = this.#here();
     try {
       const text = await invoke<string>("read_doc", { path });
+      if (opts.restoreScroll === undefined && leaving && leaving.path !== path) {
+        recordVisit(this.nav, leaving);
+      }
+      // The Preview restores this once it has rendered; writing mode has no
+      // Preview, so the editor is scrolled directly below.
+      this.pendingScroll = this.viewMode === "editor" ? null : (opts.restoreScroll ?? null);
       this.currentPath = path;
       this.content = text;
       this.savedContent = text;
@@ -582,8 +633,35 @@ class AppState {
       localStorage.setItem("inky.lastDoc", path);
       getCurrentWindow().setTitle(`${this.docName.replace(/\.(md|markdown|mmd)$/i, "")} — Inky`);
       await this.loadComments();
+      if (opts.restoreScroll !== undefined && this.viewMode === "editor" && this.editorView) {
+        const scrollDOM = this.editorView.scrollDOM;
+        const top = opts.restoreScroll;
+        requestAnimationFrame(() => (scrollDOM.scrollTop = top));
+      }
+      return true;
     } catch (e) {
       if (!opts.silent) toast.error(`Could not open document: ${e}`);
+      return false;
+    }
+  }
+
+  async goBack() {
+    await this.#travel(goBack);
+  }
+
+  async goForward() {
+    await this.#travel(goForward);
+  }
+
+  async #travel(step: typeof goBack) {
+    const here = this.#here();
+    const target = step(this.nav, here);
+    if (!target) return;
+    // A target that can't be opened any more (deleted outside the app) is
+    // dropped so the next press moves past it; we stay put, so un-record here.
+    if (!(await this.openDoc(target.path, { restoreScroll: target.scroll }))) {
+      if (here) (step === goBack ? this.nav.forward : this.nav.back).pop();
+      forgetPath(this.nav, target.path);
     }
   }
 
@@ -660,6 +738,7 @@ class AppState {
   async renamePath(path: string, newName: string) {
     try {
       const newPath = await invoke<string>("rename_path", { path, newName });
+      renamePath(this.nav, path, newPath);
       if (this.currentPath === path) {
         this.currentPath = newPath;
         localStorage.setItem("inky.lastDoc", newPath);
@@ -690,6 +769,7 @@ class AppState {
     const name = path.split("/").pop() ?? path;
     try {
       const token = await invoke<string | null>("delete_path", { path });
+      forgetPath(this.nav, path);
       if (this.currentPath === path || this.currentPath?.startsWith(path + "/")) {
         this.closeDoc();
       }
@@ -822,6 +902,7 @@ class AppState {
     try {
       this.libraryRoot = await invoke<string>("set_library_root", { path: dir });
       this.closeDoc();
+      this.nav = emptyHistory();
       await this.refreshTree();
       toast.success(`Library: ${dir}`);
     } catch (e) {
