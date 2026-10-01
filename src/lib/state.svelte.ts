@@ -37,6 +37,7 @@ export interface CommentDraft {
 export type { TocEntry };
 
 const THEMES: ThemeName[] = ["light", "dark", "book"];
+const CONFLICT_TOAST = "save-conflict";
 
 export { FONT_SCALES };
 
@@ -100,6 +101,9 @@ class AppState {
 
   /** Disk mtime of the open document at last read/write (conflict detection). */
   #docMtime: number | null = null;
+  /** An outside document changed on disk under unsaved edits; the toast asking
+   * Overwrite/Reload is up, so autosave holds off until the user picks. */
+  #conflictPending = false;
 
   commentsVisible = $state(false);
   commentThreads = $state<CommentThread[]>([]);
@@ -163,12 +167,14 @@ class AppState {
 
     this.libraryRoot = await invoke<string>("library_root");
     this.homeDir = await homeDir().catch(() => "");
-    this.workspace = await invoke<string | null>("workspace_root");
+    this.workspace = await invoke<string | null>("workspace_root").catch(() => null);
     await this.refreshTree();
 
     // Listen before draining so nothing falls between the two.
-    await listen<OpenRequest>("open-request", (e) => this.handleOpenRequest(e.payload));
-    const pending = await invoke<OpenRequest[]>("take_pending_opens");
+    await listen<OpenRequest>("open-request", (e) => {
+      this.handleOpenRequest(e.payload).catch((err) => toast.error(String(err)));
+    });
+    const pending = await invoke<OpenRequest[]>("take_pending_opens").catch(() => []);
     let welcome: string | null = null;
     if (this.tree.length === 0 && !this.workspace) {
       welcome = await invoke<string>("create_doc", {
@@ -180,7 +186,13 @@ class AppState {
       await this.refreshTree();
     }
     if (pending.length > 0) {
-      for (const req of pending) await this.handleOpenRequest(req);
+      for (const req of pending) {
+        try {
+          await this.handleOpenRequest(req);
+        } catch (err) {
+          toast.error(String(err));
+        }
+      }
     } else if (welcome) {
       await this.openDoc(welcome);
     } else {
@@ -198,14 +210,15 @@ class AppState {
     listen("library-changed", () => this.syncFromDisk());
     // Never let a debounced autosave die with the focus.
     window.addEventListener("blur", () => {
-      if (this.dirty) this.save();
+      if (this.dirty && !this.#conflictPending) this.save();
     });
     // Red-button close: flush unsaved changes first.
     getCurrentWindow().onCloseRequested(async (event) => {
       if (this.dirty) {
         event.preventDefault();
         await this.save();
-        getCurrentWindow().destroy();
+        // Unresolved conflict: stay open so Overwrite/Reload can be chosen.
+        if (!this.#conflictPending) getCurrentWindow().destroy();
       }
     });
 
@@ -227,6 +240,7 @@ class AppState {
   /** ⌘Q — save, then exit. */
   async quitApp() {
     if (this.dirty) await this.save();
+    if (this.#conflictPending) return;
     await invoke("quit_app");
   }
 
@@ -651,6 +665,7 @@ class AppState {
       // The Preview restores this once it has rendered; writing mode has no
       // Preview, so the editor is scrolled directly below.
       this.pendingScroll = this.viewMode === "editor" ? null : (opts.restoreScroll ?? null);
+      this.#clearConflict();
       this.currentPath = path;
       this.content = text;
       this.savedContent = text;
@@ -688,15 +703,22 @@ class AppState {
     const here = this.#here();
     const target = step(this.nav, here);
     if (!target) return;
+    const restoreScroll = target.scroll;
+    if (await this.openDoc(target.path, { restoreScroll, silent: true })) return;
+    // Outside documents of a closed workspace need re-granting (recents).
+    const regranted = await invoke<string>("open_recent", { path: target.path })
+      .then((p) => this.openDoc(p, { restoreScroll, silent: true }))
+      .catch(() => false);
+    if (regranted) return;
     // A target that can't be opened any more (deleted outside the app) is
     // dropped so the next press moves past it; we stay put, so un-record here.
-    if (!(await this.openDoc(target.path, { restoreScroll: target.scroll }))) {
-      if (here) (step === goBack ? this.nav.forward : this.nav.back).pop();
-      forgetPath(this.nav, target.path);
-    }
+    if (here) (step === goBack ? this.nav.forward : this.nav.back).pop();
+    forgetPath(this.nav, target.path);
+    toast.error(`Could not open ${target.path.split("/").pop()}`);
   }
 
   closeDoc() {
+    this.#clearConflict();
     this.currentPath = null;
     this.content = "";
     this.savedContent = "";
@@ -708,7 +730,7 @@ class AppState {
     getCurrentWindow().setTitle("Inky");
   }
 
-  async save() {
+  async save(opts: { force?: boolean } = {}) {
     if (!this.currentPath) return;
     if (this.#autosaveTimer) {
       clearTimeout(this.#autosaveTimer);
@@ -718,16 +740,22 @@ class AppState {
     const text = this.content;
     try {
       // Warn if the file changed on disk while we were editing (an agent via
-      // MCP, another machine, …). write_doc snapshots the disk version first,
-      // so nothing is lost — but the user should know.
-      if (this.#docMtime !== null) {
+      // MCP, another machine, …). In the library write_doc snapshots the disk
+      // version first, so nothing is lost. Outside documents have no history,
+      // so the user decides before anything is overwritten.
+      if (this.#docMtime !== null && !opts.force) {
         const current = await invoke<number>("doc_mtime", { path }).catch(() => null);
         if (current !== null && current !== this.#docMtime) {
+          if (!this.docSidecars) {
+            this.#showConflict(path);
+            return;
+          }
           toast.warning(
             "This document changed on disk while you were editing. Your version was saved; the other one was kept in .inky-history.",
           );
         }
       }
+      this.#clearConflict();
       await invoke("write_doc", { path, content: text });
       this.savedContent = text;
       this.#docMtime = await invoke<number>("doc_mtime", { path }).catch(() => null);
@@ -738,7 +766,41 @@ class AppState {
 
   scheduleAutosave() {
     if (this.#autosaveTimer) clearTimeout(this.#autosaveTimer);
-    this.#autosaveTimer = setTimeout(() => this.save(), 1200);
+    this.#autosaveTimer = setTimeout(() => {
+      this.#autosaveTimer = null;
+      if (!this.#conflictPending) this.save();
+    }, 1200);
+  }
+
+  #showConflict(path: string) {
+    this.#conflictPending = true;
+    toast.warning(`${path.split("/").pop()} changed on disk while you were editing.`, {
+      id: CONFLICT_TOAST,
+      duration: Infinity,
+      action: { label: "Overwrite", onClick: () => this.save({ force: true }) },
+      cancel: { label: "Reload", onClick: () => this.reloadFromDisk() },
+    });
+  }
+
+  #clearConflict() {
+    if (!this.#conflictPending) return;
+    this.#conflictPending = false;
+    toast.dismiss(CONFLICT_TOAST);
+  }
+
+  /** Drop unsaved edits and show the document as it is on disk. */
+  async reloadFromDisk() {
+    this.#clearConflict();
+    const path = this.currentPath;
+    if (!path) return;
+    try {
+      const text = await invoke<string>("read_doc", { path });
+      this.content = text;
+      this.savedContent = text;
+      this.#docMtime = await invoke<number>("doc_mtime", { path }).catch(() => null);
+    } catch (e) {
+      toast.error(`Could not reload: ${e}`);
+    }
   }
 
   async newDoc(dir?: string, kind: "markdown" | "mermaid" = "markdown") {
@@ -950,7 +1012,7 @@ class AppState {
     } else {
       await this.openDoc(req.path);
     }
-    await getCurrentWindow().setFocus();
+    getCurrentWindow().setFocus().catch(() => {});
   }
 
   async closeWorkspace() {
@@ -973,9 +1035,9 @@ class AppState {
     if (typeof dir !== "string") return;
     try {
       await invoke("clear_workspace", { keep: null });
+      this.workspace = null;
       this.libraryRoot = await invoke<string>("set_library_root", { path: dir });
       this.closeDoc();
-      this.workspace = null;
       this.nav = emptyHistory();
       await this.refreshTree();
       toast.success(`Library: ${dir}`);
