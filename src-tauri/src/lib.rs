@@ -81,8 +81,83 @@ fn update_recents(app: &tauri::AppHandle, f: impl FnOnce(&mut Vec<String>)) {
     on_recents_changed(app);
 }
 
-/// Keeps the Open Recent menu and Dock list in sync (filled in by Task 6).
-fn on_recents_changed(_app: &tauri::AppHandle) {}
+struct RecentMenu(std::sync::Mutex<Option<tauri::menu::Submenu<tauri::Wry>>>);
+
+/// "README.md — ~/repo" for the Open Recent menu.
+fn recent_label(path: &str, home: Option<&Path>) -> String {
+    let p = Path::new(path);
+    let name = p.file_name().unwrap_or_default().to_string_lossy();
+    let dir = p.parent().unwrap_or(Path::new("/"));
+    let dir = match home.and_then(|h| dir.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => dir.display().to_string(),
+    };
+    format!("{name} — {dir}")
+}
+
+/// Rebuild File → Open Recent from the persisted list. Holds the `RecentMenu`
+/// guard throughout, so nothing here may call back into `update_recents`.
+fn on_recents_changed(app: &tauri::AppHandle) {
+    use tauri::menu::{MenuItemBuilder, PredefinedMenuItem};
+    let state = app.state::<RecentMenu>();
+    let guard = state.0.lock().unwrap();
+    let Some(sub) = guard.as_ref() else { return };
+    if let Ok(items) = sub.items() {
+        for item in items {
+            let _ = sub.remove(&item);
+        }
+    }
+    let list = recents::existing(&read_config(app).recent);
+    let home = app.path().home_dir().ok();
+    if list.is_empty() {
+        if let Ok(item) = MenuItemBuilder::with_id("recent_none", "No Recent Documents")
+            .enabled(false)
+            .build(app)
+        {
+            let _ = sub.append(&item);
+        }
+        return;
+    }
+    for (i, path) in list.iter().enumerate() {
+        let label = recent_label(path, home.as_deref());
+        if let Ok(item) = MenuItemBuilder::with_id(format!("open_recent:{i}"), label).build(app) {
+            let _ = sub.append(&item);
+        }
+    }
+    if let Ok(sep) = PredefinedMenuItem::separator(app) {
+        let _ = sub.append(&sep);
+    }
+    if let Ok(item) = MenuItemBuilder::with_id("clear_recent", "Clear Menu").build(app) {
+        let _ = sub.append(&item);
+    }
+}
+
+/// Add a document to the Dock icon's right-click list (macOS keeps that list).
+fn note_dock_recent(app: &tauri::AppHandle, path: String) {
+    #[cfg(target_os = "macos")]
+    let _ = app.run_on_main_thread(move || {
+        use objc2_app_kit::NSDocumentController;
+        use objc2_foundation::{NSString, NSURL};
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&path));
+        NSDocumentController::sharedDocumentController(mtm).noteNewRecentDocumentURL(&url);
+    });
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, path);
+}
+
+fn clear_dock_recents(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.run_on_main_thread(|| {
+        use objc2_app_kit::NSDocumentController;
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        // SAFETY: a nil sender is documented as valid.
+        unsafe { NSDocumentController::sharedDocumentController(mtm).clearRecentDocuments(None) };
+    });
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
 
 use opens::{OpenQueue, OpenRequest};
 
@@ -279,7 +354,9 @@ fn follow_link(app: tauri::AppHandle, from_doc: String, href: String) -> Result<
 #[tauri::command]
 fn note_recent(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let abs = to_string(place(&app, &path)?.doc(&path)?.resolve(&path)?);
-    update_recents(&app, |r| recents::push(r, &abs));
+    let a = abs.clone();
+    update_recents(&app, |r| recents::push(r, &a));
+    note_dock_recent(&app, abs);
     Ok(())
 }
 
@@ -597,6 +674,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         )
         .build()?;
 
+    let recent_sub = SubmenuBuilder::new(handle, "Open Recent").build()?;
     let file_sub = SubmenuBuilder::new(handle, "File")
         .item(
             &MenuItemBuilder::with_id("new_doc", "New Document")
@@ -608,6 +686,17 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
                 .accelerator("CmdOrCtrl+K")
                 .build(handle)?,
         )
+        .item(
+            &MenuItemBuilder::with_id("open_file", "Open…")
+                .accelerator("CmdOrCtrl+O")
+                .build(handle)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("open_folder", "Open Folder…")
+                .accelerator("CmdOrCtrl+Shift+O")
+                .build(handle)?,
+        )
+        .item(&recent_sub)
         .item(&MenuItemBuilder::with_id("new_diagram", "New Mermaid Diagram").build(handle)?)
         .item(
             &MenuItemBuilder::with_id("paste_new", "New from Clipboard")
@@ -744,6 +833,8 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         .items(&[&app_sub, &file_sub, &edit_sub, &view_sub, &window_sub])
         .build()?;
     app.set_menu(menu)?;
+    *app.state::<RecentMenu>().0.lock().unwrap() = Some(recent_sub);
+    on_recents_changed(handle);
     Ok(())
 }
 
@@ -768,6 +859,7 @@ pub fn run() {
         .manage(McpServer(std::sync::Mutex::new(None)))
         .manage(AppPlaces(std::sync::Mutex::new(Places::default())))
         .manage(PendingOpens(std::sync::Mutex::new(OpenQueue::default())))
+        .manage(RecentMenu(std::sync::Mutex::new(None)))
         .manage(LibraryWatcher(std::sync::Mutex::new(None)))
         .manage(UndoStash(std::sync::Mutex::new(std::collections::HashMap::new())))
         .setup(|app| {
@@ -780,7 +872,41 @@ pub fn run() {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            let _ = app.emit("menu", event.id().0.clone());
+            use tauri_plugin_dialog::DialogExt;
+            let id = event.id().0.clone();
+            match id.as_str() {
+                "open_file" | "open_folder" => {
+                    let app = app.clone();
+                    // The blocking dialog must not run on the main thread.
+                    std::thread::spawn(move || {
+                        let picker = app.dialog().file();
+                        let picked = if id == "open_file" {
+                            picker
+                                .add_filter("Markdown", &library::DOC_EXTENSIONS)
+                                .blocking_pick_file()
+                        } else {
+                            picker.blocking_pick_folder()
+                        };
+                        if let Some(path) = picked.and_then(|p| p.into_path().ok()) {
+                            handle_open_paths(&app, vec![path]);
+                        }
+                    });
+                }
+                "clear_recent" => {
+                    update_recents(app, |r| r.clear());
+                    clear_dock_recents(app);
+                }
+                _ if id.starts_with("open_recent:") => {
+                    let list = recents::existing(&read_config(app).recent);
+                    let idx: usize = id["open_recent:".len()..].parse().unwrap_or(usize::MAX);
+                    if let Some(path) = list.get(idx) {
+                        handle_open_paths(app, vec![PathBuf::from(path)]);
+                    }
+                }
+                _ => {
+                    let _ = app.emit("menu", id);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             library_root,
@@ -834,4 +960,17 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_label_shows_name_and_short_folder() {
+        let home = Path::new("/Users/me");
+        assert_eq!(recent_label("/Users/me/repo/README.md", Some(home)), "README.md — ~/repo");
+        assert_eq!(recent_label("/opt/x.md", Some(home)), "x.md — /opt");
+        assert_eq!(recent_label("/Users/me/a.md", Some(home)), "a.md — ~");
+    }
 }
