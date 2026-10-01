@@ -130,13 +130,15 @@ impl Places {
         let place = self.find(library, from_doc)?;
         let lib = place.doc(from_doc)?;
         let from = lib.resolve(from_doc)?;
+        let end = href.find(['#', '?']).unwrap_or(href.len());
+        let decoded = percent_decode(&href[..end]).ok_or_else(|| format!("Linked file not found: {href}"))?;
+        // The renderer percent-encodes hrefs (`<My Notes.md>` → `My%20Notes.md`),
+        // so the document may hold either spelling.
         let text = lib.read(from_doc)?;
-        if href.is_empty() || !text.contains(href) {
+        if decoded.is_empty() || !(text.contains(href) || text.contains(&decoded)) {
             return Err(format!("Not a link in this document: {href}"));
         }
         let dir = from.parent().ok_or("invalid path")?;
-        let end = href.find(['#', '?']).unwrap_or(href.len());
-        let decoded = percent_decode(&href[..end]).ok_or_else(|| format!("Linked file not found: {href}"))?;
         let target = dir
             .join(decoded)
             .canonicalize()
@@ -383,6 +385,23 @@ mod tests {
         assert!(t.doc);
         assert!(t.path.ends_with("My Notes.md"));
         assert!(places.find(&f.library, &t.path).is_ok());
+    }
+
+    #[test]
+    fn follow_link_accepts_rendered_encoding_of_angle_bracket_links() {
+        // `[x](<../dir/My Notes.md>)` renders as href="../dir/My%20Notes.md".
+        let f = fixture();
+        let mut places = Places::default();
+        fs::create_dir(f.outside.join("sub")).unwrap();
+        fs::write(f.outside.join("sub/é Notes.md"), "N").unwrap();
+        fs::create_dir(f.outside.join("start")).unwrap();
+        fs::write(f.outside.join("start/cat.md"), "[x](<../sub/é Notes.md#top>)").unwrap();
+        let cat = s(&places.grant_file(&f.outside.join("start/cat.md")).unwrap());
+        let t = places
+            .follow_link(&f.library, &cat, "../sub/%C3%A9%20Notes.md#top")
+            .unwrap();
+        assert!(t.doc);
+        assert!(t.path.ends_with("sub/é Notes.md"));
     }
 
     #[test]
