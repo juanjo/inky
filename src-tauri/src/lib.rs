@@ -43,7 +43,7 @@ fn open_library(app: &tauri::AppHandle) -> Result<Library, String> {
     let lib = Library::open(&root)?;
     let stored = root.to_string_lossy().into_owned();
     if config.library.as_deref() != Some(stored.as_str()) {
-        let _ = write_config(app, &Config { library: Some(stored) });
+        let _ = write_config(app, &Config { library: Some(stored), ..read_config(app) });
     }
     Ok(lib)
 }
@@ -60,7 +60,7 @@ fn library_root(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn set_library_root(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let root = to_string(Library::open(&path)?.root().to_path_buf());
-    write_config(&app, &Config { library: Some(root.clone()) })?;
+    write_config(&app, &Config { library: Some(root.clone()), ..read_config(&app) })?;
     start_watcher(&app);
     Ok(root)
 }

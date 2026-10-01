@@ -14,9 +14,16 @@ pub const SNAPSHOT_KEEP: usize = 20;
 pub const SEARCH_CAP: usize = 300;
 pub const CONTEXT_CHARS: usize = 30;
 
+/// Error for history/comment calls on documents outside the library.
+pub const NO_SIDECARS: &str =
+    "Version history and comments are only available for documents in the Inky library";
+
 #[derive(Serialize, Deserialize, Default)]
 pub struct Config {
     pub library: Option<String>,
+    /// Recently opened documents, newest first (see `recents`).
+    #[serde(default)]
+    pub recent: Vec<String>,
 }
 
 /// `~/Library/Application Support/com.inky.app/config.json` on macOS — the same
@@ -368,6 +375,9 @@ pub struct Library {
     root: PathBuf,
     /// Marks snapshots taken by this handle as agent edits (the MCP server).
     agent_origin: bool,
+    /// Off for folders and files opened from outside the library: nothing but
+    /// the document itself is ever written there.
+    sidecars: bool,
 }
 
 impl Library {
@@ -377,7 +387,7 @@ impl Library {
         let root: PathBuf = root.into();
         fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let root = root.canonicalize().map_err(|e| e.to_string())?;
-        Ok(Library { root, agent_origin: false })
+        Ok(Library { root, agent_origin: false, sidecars: true })
     }
 
     /// Snapshots taken through this handle are tagged as agent edits, so the
@@ -385,6 +395,16 @@ impl Library {
     pub fn with_agent_origin(mut self) -> Self {
         self.agent_origin = true;
         self
+    }
+
+    /// A handle that never writes `.inky-history/` or comment sidecars.
+    pub fn without_sidecars(mut self) -> Self {
+        self.sidecars = false;
+        self
+    }
+
+    pub fn has_sidecars(&self) -> bool {
+        self.sidecars
     }
 
     /// Resolution used when no app handle exists (stdio mode):
@@ -475,7 +495,7 @@ impl Library {
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        if fs::read_to_string(&p).map(|old| old != content).unwrap_or(false) {
+        if self.sidecars && fs::read_to_string(&p).map(|old| old != content).unwrap_or(false) {
             snapshot(&p, self.agent_origin);
         }
         fs::write(p, content).map_err(|e| e.to_string())
@@ -492,7 +512,9 @@ impl Library {
         if count > 1 {
             return Err(format!("old_text occurs {count} times — include more surrounding context."));
         }
-        snapshot(&p, self.agent_origin);
+        if self.sidecars {
+            snapshot(&p, self.agent_origin);
+        }
         fs::write(p, content.replacen(old_text, new_text, 1)).map_err(|e| e.to_string())
     }
 
@@ -510,6 +532,9 @@ impl Library {
     // --- history + search ---
 
     pub fn list_versions(&self, path: &str) -> Result<Vec<VersionInfo>, String> {
+        if !self.sidecars {
+            return Err(NO_SIDECARS.into());
+        }
         let doc = self.resolve(path)?;
         doc_parts(&doc)?;
         let mut out: Vec<VersionInfo> = history_files(&doc)
@@ -532,6 +557,9 @@ impl Library {
     }
 
     pub fn read_version(&self, path: &str, version: &str) -> Result<String, String> {
+        if !self.sidecars {
+            return Err(NO_SIDECARS.into());
+        }
         let doc = self.resolve(path)?;
         let (parent, stem, ext) = doc_parts(&doc)?;
         if version.contains('/')
@@ -722,6 +750,9 @@ impl Library {
 
     /// Raw sidecar JSON ("" when there is none) — the frontend owns the typed model.
     pub fn raw_comments(&self, path: &str) -> Result<String, String> {
+        if !self.sidecars {
+            return Err(NO_SIDECARS.into());
+        }
         let doc = self.resolve(path)?;
         let Some(sc) = sidecar_for(&doc) else {
             return Ok(String::new());
@@ -730,6 +761,9 @@ impl Library {
     }
 
     pub fn write_raw_comments(&self, path: &str, json: &str) -> Result<(), String> {
+        if !self.sidecars {
+            return Err(NO_SIDECARS.into());
+        }
         let doc = self.resolve(path)?;
         let sc = sidecar_for(&doc).ok_or("invalid document path")?;
         if json.is_empty() {
@@ -742,6 +776,9 @@ impl Library {
     }
 
     pub fn threads(&self, path: &str) -> Result<Vec<CommentThread>, String> {
+        if !self.sidecars {
+            return Err(NO_SIDECARS.into());
+        }
         let raw = self.raw_comments(path)?;
         if raw.trim().is_empty() {
             return Ok(Vec::new());
@@ -753,6 +790,9 @@ impl Library {
 
     /// Persist threads in the frontend's sidecar format; an empty list removes the file.
     pub fn save_threads(&self, path: &str, threads: &[CommentThread]) -> Result<(), String> {
+        if !self.sidecars {
+            return Err(NO_SIDECARS.into());
+        }
         if threads.is_empty() {
             return self.write_raw_comments(path, "");
         }
@@ -910,6 +950,41 @@ mod tests {
         let lib = Library::from_env().unwrap();
         std::env::remove_var("INKY_LIBRARY");
         assert_eq!(lib.root(), dir.path().canonicalize().unwrap());
+    }
+
+    // --- sidecar-less handles (outside documents) ---------------------------
+
+    #[test]
+    fn without_sidecars_writes_no_history() {
+        let (_d, lib) = temp_lib();
+        let lib = lib.without_sidecars();
+        assert!(!lib.has_sidecars());
+        lib.write("n.md", "v1").unwrap();
+        lib.write("n.md", "v2").unwrap();
+        lib.patch("n.md", "v2", "v3").unwrap();
+        assert_eq!(lib.read("n.md").unwrap(), "v3");
+        assert!(!lib.root().join(HISTORY_DIR).exists());
+    }
+
+    #[test]
+    fn without_sidecars_refuses_comments_and_versions() {
+        let (_d, lib) = temp_lib();
+        let lib = lib.without_sidecars();
+        lib.write("n.md", "x").unwrap();
+        assert_eq!(lib.raw_comments("n.md").unwrap_err(), NO_SIDECARS);
+        assert!(lib.write_raw_comments("n.md", "{}").is_err());
+        assert!(lib.list_versions("n.md").is_err());
+        assert!(lib.read_version("n.md", "n.x.md").is_err());
+        assert!(lib.threads("n.md").is_err());
+        assert!(lib.save_threads("n.md", &[]).is_err());
+        assert!(sidecar_for(&lib.root().join("n.md")).map(|p| !p.exists()).unwrap_or(true));
+    }
+
+    #[test]
+    fn config_without_recent_still_parses() {
+        let c: Config = serde_json::from_str(r#"{"library":"/x"}"#).unwrap();
+        assert_eq!(c.library.as_deref(), Some("/x"));
+        assert!(c.recent.is_empty());
     }
 
     // --- Task 2: documents ---------------------------------------------------
